@@ -1,10 +1,26 @@
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
-from models.tenant import get_customer_by_key, SessionLocal, Customer
+from models.tenant import get_customer_by_key, SessionLocal, Customer, ChatSession, ChatMessage
 from services.rag import search
 from services.llm import get_client
 from services.mcp import tools, execute_tool
+from pydantic import BaseModel
+from typing import List, Optional, Any
 import json
+import uuid
+from datetime import datetime
+
+class MessageSchema(BaseModel):
+    id: str
+    role: str
+    content: str
+    tool_calls: Optional[Any] = None
+    tool_call_id: Optional[str] = None
+
+class ChatHistorySchema(BaseModel):
+    session_id: Optional[str] = None
+    messages: List[MessageSchema]
+
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -102,3 +118,56 @@ Trả lời bằng tiếng Việt, ngắn gọn và thân thiện.
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.post("/history")
+async def save_chat_history(data: ChatHistorySchema, x_api_key: str = Header(...)):
+    customer = get_customer_by_key(x_api_key)
+    if not customer:
+        raise HTTPException(401, "Invalid API key")
+
+    db = SessionLocal()
+    try:
+        session_id = data.session_id
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            new_session = ChatSession(
+                id=session_id,
+                customer_id=customer.id,
+                title=f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            )
+            db.add(new_session)
+        else:
+            # Update updated_at if session exists
+            session = db.query(ChatSession).filter_by(id=session_id, customer_id=customer.id).first()
+            if session:
+                session.updated_at = datetime.now()
+            else:
+                # If trying to save to a non-existent session, recreate it
+                new_session = ChatSession(
+                    id=session_id,
+                    customer_id=customer.id,
+                    title=f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                )
+                db.add(new_session)
+        
+        # Insert messages
+        for msg in data.messages:
+            tool_calls_str = json.dumps(msg.tool_calls) if msg.tool_calls else None
+            
+            chat_msg = ChatMessage(
+                session_id=session_id,
+                role=msg.role,
+                content=msg.content,
+                tool_calls=tool_calls_str,
+                tool_call_id=msg.tool_call_id
+            )
+            db.add(chat_msg)
+            
+        db.commit()
+        return {"status": "success", "session_id": session_id}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Error saving chat history: {str(e)}")
+    finally:
+        db.close()

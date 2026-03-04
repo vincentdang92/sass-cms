@@ -1,71 +1,43 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useChat } from 'ai/react'
+import type { Message, ToolInvocation } from 'ai'
+import { useEffect, useRef, useState } from 'react'
 
-interface Message { role: 'user' | 'assistant'; content: string }
+// Render tools ở Client
+import { PricingCard } from '@/components/PricingCard'
+import { BuyForm } from '@/components/BuyForm'
+import { DomainResult } from '@/components/DomainResult'
+import { SupportTicket } from '@/components/SupportTicket'
+import { RatingWidget } from '@/components/RatingWidget'
+import { LoadingCard } from '@/components/LoadingCard'
 
 export default function Widget() {
   const [apiKey, setApiKey] = useState('')
   const [botName, setBotName] = useState('AI Tư Vấn')
-  const [messages, setMessages] = useState<Message[]>([
-    { role: 'assistant', content: 'Xin chào! Tôi có thể giúp gì cho bạn về domain và hosting hôm nay?' }
-  ])
-  const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // Đọc params phía client (tránh SSR error)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     setApiKey(params.get('key') || '')
     setBotName(params.get('name') || 'AI Tư Vấn')
   }, [])
 
-  // Auto scroll xuống cuối
+  const { messages, input, handleInputChange, handleSubmit, isLoading } = useChat({
+    api: '/api/chat',
+    body: { apiKey },
+    initialMessages: [{
+      id: 'welcome',
+      role: 'assistant',
+      content: 'Xin chào! Tôi có thể giúp gì cho bạn về domain và hosting hôm nay?',
+    }] as Message[],
+  })
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  async function send() {
-    if (!input.trim() || loading) return
-    const userMsg: Message = { role: 'user', content: input }
-    setMessages(prev => [...prev, userMsg])
-    setInput('')
-    setLoading(true)
-
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: input, history: messages, apiKey })
-    })
-
-    if (!res.ok) {
-      setMessages(prev => [...prev, { role: 'assistant', content: 'Có lỗi xảy ra, vui lòng thử lại sau.' }])
-      setLoading(false)
-      return
-    }
-
-    const reader = res.body!.getReader()
-    let text = ''
-    setMessages(prev => [...prev, { role: 'assistant', content: '' }])
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      const lines = new TextDecoder().decode(value).split('\n')
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const data = line.slice(6)
-        if (data === '[DONE]') break
-        try { text += JSON.parse(data).text } catch { }
-        setMessages(prev => [...prev.slice(0, -1), { role: 'assistant', content: text }])
-      }
-    }
-    setLoading(false)
-  }
-
   return (
     <div className="widget-root">
-      {/* Header */}
       <div className="widget-header">
         <div className="bot-avatar">🤖</div>
         <div>
@@ -77,32 +49,63 @@ export default function Widget() {
         </div>
       </div>
 
-      {/* Messages */}
       <div className="messages-area">
-        {messages.map((m, i) => (
-          <div key={i} className={`message-row ${m.role}`}>
+        {messages.map((m: Message) => (
+          <div key={m.id} className={`message-row ${m.role}`}>
             {m.role === 'assistant' && <div className="avatar-sm">🤖</div>}
-            <div className={`bubble ${m.role}`}>
-              {m.content || <span className="typing-dots"><span /><span /><span /></span>}
+
+            <div className="bubble-wrapper">
+              {m.content && (
+                <div className={`bubble ${m.role}`}>
+                  <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{m.content}</p>
+                </div>
+              )}
+
+              {/* Client-side Tool Rendering */}
+              {m.toolInvocations?.map((tool: ToolInvocation) => {
+                if (!('result' in tool)) {
+                  return <LoadingCard key={tool.toolCallId} />
+                }
+
+                // Khi server execute xong, `result` sẽ chứa args
+                const args = tool.result
+
+                return (
+                  <div key={tool.toolCallId} className="tool-component">
+                    {tool.toolName === 'showPricing' && <PricingCard {...args} apiKey={apiKey} />}
+                    {tool.toolName === 'showBuyForm' && <BuyForm {...args} apiKey={apiKey} />}
+                    {tool.toolName === 'showDomainResult' && <DomainResult {...args} apiKey={apiKey} />}
+                    {tool.toolName === 'showSupportTicket' && <SupportTicket {...args} apiKey={apiKey} />}
+                    {tool.toolName === 'showRating' && <RatingWidget {...args} apiKey={apiKey} />}
+                  </div>
+                )
+              })}
             </div>
           </div>
         ))}
-        {loading && messages[messages.length - 1]?.content === '' && null}
+
+        {isLoading && messages[messages.length - 1]?.role !== 'assistant' && (
+          <div className="message-row assistant">
+            <div className="avatar-sm">🤖</div>
+            <div className="bubble assistant">
+              <span className="typing-dots"><span /><span /><span /></span>
+            </div>
+          </div>
+        )}
+
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
-      <div className="input-area">
+      <form onSubmit={handleSubmit} className="input-area">
         <input
           value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && !e.shiftKey && send()}
+          onChange={handleInputChange}
           placeholder="Hỏi về domain, hosting, VPS..."
-          disabled={loading}
+          disabled={isLoading}
           className="chat-input"
         />
-        <button onClick={send} disabled={loading || !input.trim()} className="send-btn">
-          {loading ? (
+        <button type="submit" disabled={isLoading || !input.trim()} className="send-btn">
+          {isLoading ? (
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
               <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
             </svg>
@@ -113,7 +116,7 @@ export default function Widget() {
             </svg>
           )}
         </button>
-      </div>
+      </form>
     </div>
   )
 }

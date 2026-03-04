@@ -5,6 +5,25 @@ import os
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
+# ── Customer self-lookup (dùng cho Next.js route.ts) ─────────────────
+@router.get("/customers/me")
+def get_customer_me(x_api_key: str = Header(...)):
+    """Next.js route.ts gọi endpoint này để lấy customer config"""
+    db = SessionLocal()
+    c = db.query(Customer).filter_by(api_key=x_api_key, is_active=True).first()
+    db.close()
+    if not c:
+        raise HTTPException(401, "Invalid API key")
+    return {
+        "id": c.id,
+        "bot_name": c.bot_name,
+        "system_prompt": c.system_prompt,
+        "llm_provider": c.llm_provider,
+        "llm_model": c.llm_model,
+        "qdrant_collection": c.qdrant_collection,
+        "plan": c.plan,
+    }
+
 def verify_admin(secret: str = Header(..., alias="x-admin-secret")):
     if secret != os.getenv("ADMIN_SECRET"):
         raise HTTPException(status_code=403, detail="Forbidden")

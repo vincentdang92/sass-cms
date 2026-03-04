@@ -24,12 +24,14 @@ qdrant = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"))
 engine = create_engine(os.getenv("DATABASE_URL", ""))
 
 # ── Mount routers ──────────────────────────────────────────────────────
-from routers import admin, auth, chat, kb
+from routers import admin, auth, chat, kb, rag_search, crm
 
 app.include_router(admin.router)
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(kb.router)
+app.include_router(rag_search.router)
+app.include_router(crm.router)
 
 # ── Health check endpoints ─────────────────────────────────────────────
 @app.get("/health", tags=["System"])
