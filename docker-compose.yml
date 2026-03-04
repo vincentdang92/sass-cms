@@ -1,0 +1,99 @@
+version: '3.8'
+
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    ports:
+      - "3000:8080"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - open-webui-data:/app/backend/data
+    mem_limit: 1G
+    memswap_limit: 1G
+    networks:
+      - chatbot-net
+    restart: always
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    environment:
+      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=2
+    mem_limit: 512m
+    memswap_limit: 512m
+    networks:
+      - chatbot-net
+    restart: always
+
+  api:
+    build: ./api
+    container_name: chatbot-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - QDRANT_URL=http://qdrant:6333
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ADMIN_SECRET=${ADMIN_SECRET}
+      - WHOIS_API_KEY=${WHOIS_API_KEY}
+    volumes:
+      - ./api:/app
+    mem_limit: 1g # sentence-transformers cần ~300MB
+    memswap_limit: 1g
+    depends_on:
+      - qdrant
+      - postgres
+    networks:
+      - chatbot-net
+    restart: always
+
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    command: >
+      postgres -c shared_buffers=128MB -c max_connections=50 -c work_mem=4MB
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    mem_limit: 256m
+    memswap_limit: 256m
+    networks:
+      - chatbot-net
+    restart: always
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@admin.com
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    ports:
+      - "5050:80"
+    mem_limit: 256m
+    memswap_limit: 256m
+    networks:
+      - chatbot-net
+    restart: always
+    profiles:
+      - dev # chỉ chạy khi: docker compose --profile dev up
+
+networks:
+  chatbot-net:
+    driver: bridge
+
+volumes:
+  open-webui-data:
+  qdrant-data:
+  postgres-data:

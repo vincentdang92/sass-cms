@@ -1,0 +1,72 @@
+BẢNG GIÁ HOSTING & VPS
+
+=== SHARED HOSTING ===
+
+Gói Starter
+  Dung lượng: 5GB SSD
+  Băng thông: Không giới hạn
+  Website: 1 domain chính + 2 addon
+  Email: 10 hộp thư
+  Giá: 49.000đ/tháng (588.000đ/năm)
+
+Gói Business (Bán chạy nhất ⭐)
+  Dung lượng: 20GB SSD
+  Băng thông: Không giới hạn
+  Website: Không giới hạn
+  Email: Không giới hạn
+  SSL miễn phí: Có
+  Backup hàng ngày: Có
+  Giá: 99.000đ/tháng (1.188.000đ/năm)
+
+Gói Enterprise
+  Dung lượng: 50GB SSD NVMe
+  Băng thông: Không giới hạn
+  Website: Không giới hạn
+  Email: Không giới hạn
+  SSL miễn phí: Có
+  Backup hàng ngày + weekly: Có
+  cPanel đầy đủ: Có
+  Ưu tiên hỗ trợ 24/7: Có
+  Giá: 199.000đ/tháng (2.388.000đ/năm)
+
+=== VPS (Virtual Private Server) ===
+
+VPS SSD-1 (Dành cho beginner)
+  CPU: 2 vCPU
+  RAM: 2GB
+  Disk: 40GB SSD
+  Băng thông: 2TB/tháng
+  IP: 1 IPv4 tĩnh
+  OS: Ubuntu / CentOS / Windows
+  Giá: 299.000đ/tháng
+
+VPS SSD-2 (Phổ biến)
+  CPU: 4 vCPU
+  RAM: 4GB
+  Disk: 80GB SSD NVMe
+  Băng thông: 4TB/tháng
+  IP: 1 IPv4 tĩnh
+  Giá: 549.000đ/tháng
+
+VPS SSD-4 (Hiệu suất cao)
+  CPU: 6 vCPU
+  RAM: 8GB
+  Disk: 160GB SSD NVMe
+  Băng thông: 8TB/tháng
+  IP: 1 IPv4 tĩnh
+  Giá: 999.000đ/tháng
+
+VPS SSD-8 (Server mạnh)
+  CPU: 8 vCPU
+  RAM: 16GB
+  Disk: 320GB SSD NVMe
+  Băng thông: Không giới hạn
+  IP: 2 IPv4 tĩnh
+  Giá: 1.799.000đ/tháng
+
+=== LƯU Ý VPS ===
+- Hỗ trợ cài đặt miễn phí (remote desktop)
+- Snapshot backup: +50.000đ/tháng/snapshot
+- Upgrade/Downgrade linh hoạt
+- SLA uptime: 99.9%
+- Hỗ trợ kỹ thuật: 8h-22h hàng ngày

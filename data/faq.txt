@@ -1,0 +1,46 @@
+FAQ HỖ TRỢ KỸ THUẬT - DOMAIN & HOSTING
+
+=== CÂU HỎI THƯỜNG GẶP VỀ DOMAIN ===
+
+Q: Sau khi đăng ký domain, mất bao lâu để domain hoạt động?
+A: Domain thường hoạt động trong vòng 15-30 phút sau khi đăng ký. Tuy nhiên, quá trình propagation DNS trên toàn cầu có thể mất 24-48 giờ.
+
+Q: Tôi có thể chuyển domain từ nhà đăng ký khác về không?
+A: Có. Bạn cần lấy mã EPP Code từ nhà đăng ký cũ, sau đó làm thủ tục transfer mất khoảng 5-7 ngày. Domain cần tồn tại ít nhất 60 ngày mới được transfer.
+
+Q: Domain của tôi bị hết hạn, có lấy lại được không?
+A: Có. Trong vòng 30 ngày sau khi hết hạn, bạn có thể gia hạn với phí bình thường. Từ ngày 31-75 (Redemption Period) sẽ mất thêm phí khôi phục 500.000đ. Sau 75 ngày domain bị xóa và ai cũng có thể đăng ký lại.
+
+Q: Nameserver là gì và tôi cần làm gì với nó?
+A: Nameserver là máy chủ DNS để domain biết trỏ về đâu. Khi mua hosting, chúng tôi sẽ cung cấp nameserver. Bạn chỉ cần cập nhật nameserver trong phần quản lý domain.
+
+Q: Tôi có thể giữ tên dom ẩn trên Whois không?
+A: Có, dịch vụ Whois Privacy bảo vệ thông tin cá nhân của bạn. Thêm 50.000đ/năm.
+
+=== CÂU HỎI VỀ HOSTING ===
+
+Q: Hosting và VPS khác nhau như thế nào?
+A: Hosting (shared hosting) là bạn chia sẻ máy chủ với nhiều người dùng khác, phù hợp cho website nhỏ và vừa. VPS là bạn có máy chủ ảo riêng, tài nguyên được đảm bảo, phù hợp cho ứng dụng phức tạp, traffic lớn, hoặc cần cài thêm phần mềm đặc biệt.
+
+Q: Tôi cần hosting loại nào cho website WordPress?
+A: Gói Business của chúng tôi là lý tưởng nhất cho WordPress - có đủ tài nguyên, cPanel dễ dùng, cài WordPress 1-click, SSL miễn phí và backup hàng ngày.
+
+Q: Uptime của hosting có đảm bảo không?
+A: Chúng tôi cam kết SLA 99.9% uptime. Nếu downtime vượt quá mức này trong tháng, bạn sẽ được bồi thường theo tỷ lệ.
+
+Q: Tôi có thể nâng cấp gói hosting không?
+A: Có thể nâng cấp bất kỳ lúc nào. Phí sẽ được tính theo thời gian còn lại của gói cũ và gói mới theo tỷ lệ.
+
+Q: Backup dữ liệu như thế nào?
+A: Gói Business và Enterprise có backup tự động hàng ngày, lưu trữ 7 ngày gần nhất. Bạn có thể restore 1-click từ Control Panel.
+
+=== HỖ TRỢ KỸ THUẬT ===
+
+Q: Khi nào có thể liên hệ hỗ trợ?
+A: Hỗ trợ qua chat và email: 8h00 - 22h00 hàng ngày (kể cả lễ tết). Hotline khẩn cấp: 24/7.
+
+Q: Thời gian phản hồi hỗ trợ trung bình là bao lâu?
+A: Chat trực tuyến: dưới 2 phút. Email/Ticket: dưới 4 giờ trong giờ hành chính.
+
+Q: Tôi không biết cài đặt, có được hỗ trợ không?
+A: Có. Chúng tôi hỗ trợ cài đặt miễn phí: WordPress, SSL, email, cấu hình DNS cơ bản.

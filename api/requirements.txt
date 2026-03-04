@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+openai
+qdrant-client
+python-multipart
+python-dotenv
+httpx
+sentence-transformers
+pydantic[email]
