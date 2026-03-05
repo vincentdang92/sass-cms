@@ -1,86 +1,51 @@
-import httpx, os
-from sqlalchemy import create_engine, text
+import httpx
+import logging
 
-engine = create_engine(os.getenv("DATABASE_URL"))
+logger = logging.getLogger(__name__)
 
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "check_domain_availability",
-            "description": "Kiểm tra domain có available không và giá",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "domain": {"type": "string", "description": "tên domain, vd: example.com"}
-                },
-                "required": ["domain"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_pricing",
-            "description": "Lấy bảng giá domain, hosting, VPS",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "product_type": {
-                        "type": "string",
-                        "enum": ["domain", "hosting", "vps"]
-                    }
-                },
-                "required": ["product_type"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "whois_lookup",
-            "description": "Tra cứu thông tin whois của domain",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "domain": {"type": "string"}
-                },
-                "required": ["domain"]
-            }
-        }
-    }
-]
+async def get_mcp_tools(mcp_url: str, mcp_token: str) -> list:
+    """Gọi GET /tools tới MCP Server của KH để lấy danh sách tools"""
+    if not mcp_url:
+        return []
 
-async def execute_tool(name: str, args: dict, tenant_id: str) -> str:
-    if name == "check_domain_availability":
-        async with httpx.AsyncClient() as client:
-            try:
-                res = await client.get(f"https://zonedns.vn/whoisvn.php?domain={args['domain']}")
-                text_res = res.text.lower()
-                is_taken = "true" in text_res
-                status = "đã có người đăng ký ❌" if is_taken else "available ✅"
-                price_text = "" if is_taken else ", giá: 300,000đ/năm"
-                return f"Domain {args['domain']}: {status}{price_text}"
-            except Exception:
-                return f"Không thể kiểm tra {args['domain']} lúc này"
+    headers = {}
+    if mcp_token:
+        headers["Authorization"] = f"Bearer {mcp_token}"
 
-    elif name == "get_pricing":
-        with engine.connect() as conn:
-            rows = conn.execute(
-                text("SELECT name, price, description FROM pricing WHERE type = :t AND tenant_id = :tid"),
-                {"t": args["product_type"], "tid": tenant_id}
-            ).fetchall()
-        if rows:
-            return "\n".join([f"• {r.name}: {r.price:,}đ — {r.description}" for r in rows])
-        return "Không có dữ liệu giá"
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            url = mcp_url.rstrip("/") + "/tools"
+            res = await client.get(url, headers=headers)
+            res.raise_for_status()
+            data = res.json()
+            # Expecting { "tools": [ { "type": "function", "function": {...} } ] }
+            return data.get("tools", [])
+        except Exception as e:
+            logger.error(f"Lỗi khi gọi {mcp_url}/tools: {str(e)}")
+            return []
 
-    elif name == "whois_lookup":
-        async with httpx.AsyncClient() as client:
-            res = await client.get(
-                f"https://api.whoisfreaks.com/v1.0/whois",
-                params={"apiKey": os.getenv("WHOIS_API_KEY"), "whois": "live", "domainName": args["domain"]}
-            )
-        data = res.json()
-        return f"Registrar: {data.get('registrar_name', 'N/A')}, Expires: {data.get('expiry_date', 'N/A')}"
+async def execute_mcp_tool(mcp_url: str, mcp_token: str, tool_name: str, args: dict) -> str:
+    """Gọi POST /execute tới MCP Server để thực thi tool"""
+    if not mcp_url:
+        return "Tenant chưa cấu hình MCP Server URL."
 
-    return "Tool không tồn tại"
+    headers = {"Content-Type": "application/json"}
+    if mcp_token:
+        headers["Authorization"] = f"Bearer {mcp_token}"
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            url = mcp_url.rstrip("/") + "/execute"
+            payload = {"tool": tool_name, "arguments": args}
+            res = await client.post(url, json=payload, headers=headers)
+            res.raise_for_status()
+            data = res.json()
+            
+            # MCP có thể trả về { "status": "success", "result": "..." }
+            return str(data.get("result", data))
+        except httpx.HTTPError as e:
+            logger.error(f"Lỗi HTTP khi gọi {tool_name} từ {mcp_url}: {str(e)}")
+            return f"❌ Server của tenant trả về lỗi HTTP: {str(e)}"
+        except Exception as e:
+            logger.error(f"Lỗi không xác định khi execute tool {tool_name}: {str(e)}")
+            return f"❌ Lỗi nội bộ chatbot khi gọi tool: {str(e)}"

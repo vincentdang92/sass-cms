@@ -1,4 +1,4 @@
-import { streamText, tool } from 'ai'
+import { streamText, tool, jsonSchema } from 'ai'
 import { createOpenAI } from '@ai-sdk/openai'
 import { z } from 'zod'
 
@@ -46,10 +46,56 @@ ${kbContext || 'Không có thông tin liên quan trong KB.'}
 
 Khi khách hỏi giá → gọi tool showPricing.
 Khi khách mua/đặt hàng → gọi tool showBuyForm.
-Khi hỏi domain cụ thể → gọi tool showDomainResult.
-Khi cần hỗ trợ/ticket → gọi tool showSupportTicket.
+Khi cần hỗ trợ nội bộ → gọi tool showSupportTicket.
 Khi cuộc trò chuyện kết thúc hoặc đã giải quyết xong → gọi tool showRating.
+Nếu khách có yêu cầu chức năng khác, kiểm tra các tool được cung cấp bởi hệ thống mở rộng (Nếu có).
 Trả lời bằng tiếng Việt, ngắn gọn, thân thiện.`
+
+  // 3.5 Lấy Dynamic Tools từ MCP Server của khách hàng (Nếu có cấu hình)
+  const mcpTools: Record<string, any> = {}
+  if (config.mcp_server_url) {
+    try {
+      const headers: Record<string, string> = {}
+      if (config.mcp_auth_token) {
+        // Assume bearer token if not explicitly formatted
+        const isBearer = config.mcp_auth_token.toLowerCase().startsWith('bearer')
+        headers['Authorization'] = isBearer ? config.mcp_auth_token : `Bearer ${config.mcp_auth_token}`
+      }
+
+      const toolsRes = await fetch(`${config.mcp_server_url}/tools`, { headers })
+      if (toolsRes.ok) {
+        const data = await toolsRes.json()
+        if (data.tools && Array.isArray(data.tools)) {
+          for (const t of data.tools) {
+            const funcDef = t.function || t // Handle both raw schemas and OpenAI schemas
+            const name = funcDef.name
+
+            mcpTools[name] = tool({
+              description: funcDef.description || `Dynamic tool: ${name}`,
+              parameters: jsonSchema(funcDef.parameters),
+              execute: async (args) => {
+                try {
+                  const exRes = await fetch(`${config.mcp_server_url}/execute`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...headers },
+                    body: JSON.stringify({ tool: name, arguments: args })
+                  })
+                  if (!exRes.ok) return { error: `MCP Server Error: ${exRes.statusText}` }
+                  return await exRes.json()
+                } catch (e: any) {
+                  return { error: 'Failed to execute MCP tool', detail: e.message }
+                }
+              }
+            })
+          }
+        }
+      } else {
+        console.error('Failed to fetch MCP tools:', toolsRes.status, toolsRes.statusText)
+      }
+    } catch (e) {
+      console.error('Failed to connect to MCP server:', e)
+    }
+  }
 
   // 4. streamText với tools (Client-side rendering)
   const result = await streamText({
@@ -57,6 +103,7 @@ Trả lời bằng tiếng Việt, ngắn gọn, thân thiện.`
     system: systemPrompt,
     messages,
     tools: {
+      ...mcpTools, // Inject các MCP tools từ tenant
       showPricing: tool({
         description: 'Hiển thị bảng giá sản phẩm',
         parameters: z.object({
@@ -77,26 +124,6 @@ Trả lời bằng tiếng Việt, ngắn gọn, thân thiện.`
           amount: z.number(),
         }),
         execute: async (args) => args,
-      }),
-      showDomainResult: tool({
-        description: 'Kết quả kiểm tra domain',
-        parameters: z.object({
-          domain: z.string(),
-        }),
-        execute: async ({ domain }) => {
-          try {
-            const res = await fetch(`https://zonedns.vn/whoisvn.php?domain=${domain}`)
-            const text = await res.text()
-            const isTaken = text.includes('true')
-            return {
-              domain,
-              available: !isTaken,
-              price: !isTaken ? 300000 : undefined
-            }
-          } catch (e) {
-            return { domain, available: false }
-          }
-        },
       }),
       showSupportTicket: tool({
         description: 'Form hỗ trợ kỹ thuật',

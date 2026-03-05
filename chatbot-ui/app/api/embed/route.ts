@@ -1,19 +1,28 @@
 export async function GET(request: Request) {
-    const { searchParams } = new URL(request.url)
-    const key = searchParams.get('key')
+  const { searchParams } = new URL(request.url)
+  const key = searchParams.get('key')
+  const avatar = searchParams.get('avatar')
+  const name = searchParams.get('name')
 
-    if (!key) {
-        return new Response('console.error("Missing Chatbot API Key");', {
-            headers: { 'Content-Type': 'application/javascript' }
-        })
-    }
+  if (!key) {
+    return new Response('console.error("Missing Chatbot API Key");', {
+      headers: { 'Content-Type': 'application/javascript' }
+    })
+  }
 
-    // Define the base URL of the Next.js app 
-    // Normally this would be dynamic based on the request host, but for MVP local testing we use localhost:3001
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
-    const iframeUrl = `${appUrl}/widget/embed?key=${key}`
+  // Define the base URL of the Next.js app 
+  // Normally this would be dynamic based on the request host, but for MVP local testing we use localhost:3001
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+  let iframeUrl = `${appUrl}/widget/${key}?key=${key}`
+  if (avatar) {
+    // Need to encode the avatar URL since it might contain special characters
+    iframeUrl += `&avatar=${encodeURIComponent(avatar)}`
+  }
+  if (name) {
+    iframeUrl += `&name=${encodeURIComponent(name)}`
+  }
 
-    const jsCode = `
+  const jsCode = `
 (function() {
   // Prevent multiple injections
   if (document.getElementById('saas-chatbot-widget-container')) return;
@@ -122,10 +131,10 @@ export async function GET(request: Request) {
 })();
 `
 
-    return new Response(jsCode, {
-        headers: {
-            'Content-Type': 'application/javascript',
-            'Cache-Control': 'public, max-age=3600'
-        }
-    })
+  return new Response(jsCode, {
+    headers: {
+      'Content-Type': 'application/javascript',
+      'Cache-Control': 'public, max-age=3600'
+    }
+  })
 }

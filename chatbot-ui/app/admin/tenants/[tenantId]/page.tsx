@@ -7,6 +7,7 @@ interface Tenant {
     system_prompt: string; llm_provider: string; llm_model: string
     plan: string; max_requests_day: number; api_key: string
     active: boolean; requests_today: number; qdrant_collection: string
+    mcp_server_url?: string; mcp_auth_token?: string; bot_avatar?: string
 }
 
 interface KBDoc { id: string; content: string; metadata: Record<string, any> }
@@ -43,12 +44,15 @@ export default function TenantDetailPage() {
     const [tenant, setTenant] = useState<Tenant | null>(null)
     const [loading, setLoading] = useState(true)
     const [tab, setTab] = useState<'settings' | 'kb' | 'chat' | 'quota'>('settings')
+    const [activeCodeTab, setActiveCodeTab] = useState<'php' | 'node' | 'python'>('php')
 
     // Settings
     const [saving, setSaving] = useState(false)
     const [saveMsg, setSaveMsg] = useState('')
     const [regenLoading, setRegenLoading] = useState(false)
     const [regenKey, setRegenKey] = useState('')
+    const [uploadingAvatar, setUploadingAvatar] = useState(false)
+    const avatarInputRef = useRef<HTMLInputElement>(null)
 
     // KB
     const [kbDocs, setKbDocs] = useState<KBDoc[]>([])
@@ -86,7 +90,7 @@ export default function TenantDetailPage() {
     // Load tenant
     useEffect(() => {
         if (!tenantId) return
-        fetch(`${apiUrl}/admin/customers`, { headers: h })
+        fetch(`${apiUrl}/admin/customers`, { headers: h, cache: 'no-store' })
             .then(r => r.json())
             .then((data: any[]) => {
                 const found = data.find((c: any) => c.id === tenantId)
@@ -142,14 +146,26 @@ export default function TenantDetailPage() {
         })
         const data = await res.json()
         if (res.ok) {
-            setTopupMsg(`✅ Đã thêm ${topupAmount} requests! Giới hạn mới: ${data.new_max}`)
+            setTopupMsg('✅ Đã cộng request thành công!')
+            setTopupAmount(0)
+            setTopupReason('Mua thêm theo gói')
             setTopupNote('')
-            // Refresh quota stats and history
-            fetch(`${apiUrl}/admin/customers/${tenantId}/quota`, { headers: h }).then(r => r.json()).then(setQuota)
+            setQuota(q => q ? { ...q, max_requests_day: data.new_max, requests_today: data.requests_today, remaining: data.new_max - data.requests_today } : q)
             loadTopupHistory(1)
-            setTimeout(() => setTopupMsg(''), 4000)
-        } else {
-            setTopupMsg('❌ Lỗi khi nạp request')
+        } else setTopupMsg(`❌ Lỗi: ${data.detail}`)
+        setTimeout(() => setTopupMsg(''), 3000)
+    }
+
+    const handleGenerateToken = () => {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+        const token = Array.from({ length: 32 }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
+        setTenant(t => t ? { ...t, mcp_auth_token: `sk_mcp_${token}` } : t)
+    }
+
+    const handleCopyToken = () => {
+        if (tenant?.mcp_auth_token) {
+            navigator.clipboard.writeText(tenant.mcp_auth_token)
+            alert('Đã copy token!')
         }
     }
 
@@ -206,6 +222,8 @@ export default function TenantDetailPage() {
                     llm_provider: tenant.llm_provider, llm_model: tenant.llm_model,
                     plan: tenant.plan, max_requests_day: tenant.max_requests_day,
                     is_active: tenant.active,
+                    mcp_server_url: tenant.mcp_server_url,
+                    mcp_auth_token: tenant.mcp_auth_token,
                 })
             })
             setSaveMsg(res.ok ? '✅ Đã lưu thành công!' : '❌ Lỗi khi lưu. Thử lại!')
@@ -221,6 +239,28 @@ export default function TenantDetailPage() {
             const data = await res.json()
             if (res.ok) { setRegenKey(data.api_key); setTenant(t => t ? { ...t, api_key: data.api_key } : t) }
         } catch { } finally { setRegenLoading(false) }
+    }
+
+    const handleAvatarUpload = async (file: File) => {
+        if (!tenant || !file) return
+        setUploadingAvatar(true)
+        const formData = new FormData()
+        formData.append('file', file)
+        try {
+            const res = await fetch(`${apiUrl}/admin/customers/${tenantId}/avatar`, {
+                method: 'POST', headers: h, body: formData
+            })
+            const data = await res.json()
+            if (res.ok) {
+                setTenant(t => t ? { ...t, bot_avatar: data.avatar_url } : t)
+            } else {
+                alert('Lỗi khi upload avatar: ' + (data.detail || ''))
+            }
+        } catch (e) {
+            alert('Lỗi kết nối API')
+        } finally {
+            setUploadingAvatar(false)
+        }
     }
 
     const handleFileChange = (files: FileList | null) => {
@@ -319,6 +359,46 @@ export default function TenantDetailPage() {
             {/* ── Settings Tab ── */}
             {tab === 'settings' && (
                 <div className="admin-card">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 20, marginBottom: 24, paddingBottom: 24, borderBottom: '1px solid var(--admin-border)' }}>
+                        <div style={{
+                            width: 80, height: 80, borderRadius: '50%', background: 'var(--admin-surface-3)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32,
+                            overflow: 'hidden', border: '1px solid var(--admin-border)', position: 'relative'
+                        }}>
+                            {tenant.bot_avatar ? (
+                                <img src={`${apiUrl}${tenant.bot_avatar}`} alt="Bot Avatar" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                            ) : '🤖'}
+                            {uploadingAvatar && <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14 }}>⏳</div>}
+                        </div>
+                        <div>
+                            <input ref={avatarInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={e => { if (e.target.files?.[0]) handleAvatarUpload(e.target.files[0]) }} />
+                            <button className="admin-btn admin-btn-sm" onClick={() => avatarInputRef.current?.click()} disabled={uploadingAvatar}>
+                                📷 Cập nhật Avatar
+                            </button>
+                            <div style={{ fontSize: 12, color: 'var(--admin-text-muted)', marginTop: 8 }}>JPG, PNG hoặc WebP. Avatar sẽ hiển thị trên Widget chat.</div>
+                        </div>
+                    </div>
+
+                    <div style={{ marginBottom: 24, paddingBottom: 24, borderBottom: '1px solid var(--admin-border)' }}>
+                        <div className="admin-section-header" style={{ marginBottom: 12 }}>
+                            <span className="admin-section-title">🌍 Tích hợp Website (Embed Script)</span>
+                            <span className="text-sm text-muted">Copy đoạn code sau và dán vào thẻ <code>&lt;body&gt;</code> trên website của bạn.</span>
+                        </div>
+                        <div style={{ position: 'relative' }}>
+                            <pre style={{ margin: 0, padding: '16px 20px', background: '#1e1e1e', color: '#d4d4d4', borderRadius: 8, fontSize: 13, overflowX: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                                {`<script src="${apiUrl.replace('/api', '')}/embed.js?key=${tenant.api_key}${tenant.bot_name ? `&name=${encodeURIComponent(tenant.bot_name)}` : ''}${tenant.bot_avatar ? `&avatar=${encodeURIComponent(tenant.bot_avatar)}` : ''}" defer></script>`}
+                            </pre>
+                            <button className="admin-btn admin-btn-sm admin-btn-primary"
+                                style={{ position: 'absolute', top: 10, right: 10 }}
+                                onClick={() => {
+                                    navigator.clipboard.writeText(`<script src="${apiUrl.replace('/api', '')}/embed.js?key=${tenant.api_key}${tenant.bot_name ? `&name=${encodeURIComponent(tenant.bot_name)}` : ''}${tenant.bot_avatar ? `&avatar=${encodeURIComponent(tenant.bot_avatar)}` : ''}" defer></script>`)
+                                    alert('Đã copy đoạn mã nhúng!')
+                                }}>
+                                📋 Copy
+                            </button>
+                        </div>
+                    </div>
+
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
                         <div className="admin-form-group">
                             <label className="admin-label">Tên Bot</label>
@@ -379,6 +459,102 @@ export default function TenantDetailPage() {
                     <div className="admin-form-group">
                         <label className="admin-label">System Prompt</label>
                         <textarea className="admin-textarea" rows={6} value={tenant.system_prompt || ''} onChange={e => setTenant(t => t ? { ...t, system_prompt: e.target.value } : t)} />
+                    </div>
+
+                    <hr className="divider" />
+                    <div className="admin-section-header" style={{ marginBottom: 16 }}>
+                        <span className="admin-section-title">🔌 MCP Server Integration</span>
+                        <span className="text-sm text-muted">Kết nối với Agent tools của khách hàng (Whois, Booking, Support...)</span>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 20, marginBottom: 20 }}>
+                        <div className="admin-form-group">
+                            <label className="admin-label">MCP Server URL (Base URL)</label>
+                            <input className="admin-input" placeholder="VD: https://api.customer.com/mcp" value={tenant.mcp_server_url || ''} onChange={e => setTenant(t => t ? { ...t, mcp_server_url: e.target.value } : t)} />
+                            <div style={{ fontSize: 12, color: 'var(--admin-text-muted)', marginTop: 4 }}>Bot sẽ tự động gọi <code style={{ fontSize: 11 }}>GET /tools</code> và <code style={{ fontSize: 11 }}>POST /execute</code> tới URL này.</div>
+                        </div>
+                        <div className="admin-form-group">
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <label className="admin-label">Auth Token (Bearer)</label>
+                                <div style={{ display: 'flex', gap: 6 }}>
+                                    <button className="admin-btn admin-btn-sm" onClick={handleGenerateToken} title="Tạo token mới" style={{ padding: '2px 6px', fontSize: 11 }}>🔄 Tạo mã</button>
+                                    <button className="admin-btn admin-btn-sm" onClick={handleCopyToken} title="Copy token" style={{ padding: '2px 6px', fontSize: 11 }}>📋 Copy</button>
+                                </div>
+                            </div>
+                            <input className="admin-input" type="password" placeholder="Token bảo mật..." value={tenant.mcp_auth_token || ''} onChange={e => setTenant(t => t ? { ...t, mcp_auth_token: e.target.value } : t)} />
+                        </div>
+                    </div>
+
+                    <div style={{ marginBottom: 20, background: 'var(--admin-bg)', padding: '16px', borderRadius: '8px', border: '1px solid var(--admin-border)' }}>
+                        <h4 style={{ marginTop: 0, marginBottom: 12, fontSize: 14 }}>💻 Hướng dẫn tích hợp (dành cho Dev)</h4>
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                            <button className="admin-btn admin-btn-sm" onClick={() => setActiveCodeTab('php')} style={{ background: activeCodeTab === 'php' ? 'var(--admin-primary-glow)' : '' }}>PHP</button>
+                            <button className="admin-btn admin-btn-sm" onClick={() => setActiveCodeTab('node')} style={{ background: activeCodeTab === 'node' ? 'var(--admin-primary-glow)' : '' }}>Node.js</button>
+                            <button className="admin-btn admin-btn-sm" onClick={() => setActiveCodeTab('python')} style={{ background: activeCodeTab === 'python' ? 'var(--admin-primary-glow)' : '' }}>Python</button>
+                        </div>
+
+                        {activeCodeTab === 'php' && (
+                            <pre style={{ margin: 0, padding: 12, background: '#1e1e1e', color: '#d4d4d4', borderRadius: 4, fontSize: 12, overflowX: 'auto' }}>
+                                {`// API Endpoint: GET /mcp/tools
+$token = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+if ($token !== 'Bearer ${tenant.mcp_auth_token || 'YOUR_TOKEN'}') die('Unauthorized');
+
+echo json_encode(["tools" => [
+  [
+    "type" => "function",
+    "function" => [
+      "name" => "check_stock",
+      "description" => "Kiểm tra tồn kho",
+      "parameters" => ["type" => "object", "properties" => ["item" => ["type"=>"string"]]]
+    ]
+  ]
+]]);
+
+// API Endpoint: POST /mcp/execute
+$data = json_decode(file_get_contents('php://input'), true);
+if ($data['tool'] === 'check_stock') {
+    echo json_encode(["status" => "success", "result" => "Còn 5 sản phẩm"]);
+}`}
+                            </pre>
+                        )}
+                        {activeCodeTab === 'node' && (
+                            <pre style={{ margin: 0, padding: 12, background: '#1e1e1e', color: '#d4d4d4', borderRadius: 4, fontSize: 12, overflowX: 'auto' }}>
+                                {`app.get('/mcp/tools', (req, res) => {
+  if (req.headers.authorization !== 'Bearer ${tenant.mcp_auth_token || 'YOUR_TOKEN'}') 
+    return res.status(401).send('Unauthorized');
+    
+  res.json({ tools: [{
+    type: "function",
+    function: { name: "check_stock", description: "Kiểm tra tồn kho", parameters: { /* ... */ } }
+  }]});
+});
+
+app.post('/mcp/execute', (req, res) => {
+  const { tool, arguments: args } = req.body;
+  if (tool === 'check_stock') {
+    res.json({ status: "success", result: \`Sản phẩm \${args.item} còn 5 cái\` });
+  }
+});`}
+                            </pre>
+                        )}
+                        {activeCodeTab === 'python' && (
+                            <pre style={{ margin: 0, padding: 12, background: '#1e1e1e', color: '#d4d4d4', borderRadius: 4, fontSize: 12, overflowX: 'auto' }}>
+                                {`from fastapi import FastAPI, Header, HTTPException
+app = FastAPI()
+
+@app.get("/mcp/tools")
+def get_tools(authorization: str = Header(None)):
+    if authorization != "Bearer ${tenant.mcp_auth_token || 'YOUR_TOKEN'}":
+        raise HTTPException(401)
+    return {"tools": [ ... ]}
+
+@app.post("/mcp/execute")
+def execute(req: dict, authorization: str = Header(None)):
+    if req["tool"] == "check_stock":
+        return {"status": "success", "result": "Còn 5 sản phẩm"}
+`}
+                            </pre>
+                        )}
                     </div>
 
                     <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
