@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 from models.tenant import get_customer_by_key, SessionLocal, Customer, ChatSession, ChatMessage
 from services.rag import search
 from services.llm import get_client
-from services.mcp import tools, execute_tool
+from services.mcp import get_mcp_tools, execute_mcp_tool
 from pydantic import BaseModel
 from typing import List, Optional, Any
 import json
@@ -55,14 +55,19 @@ Trả lời bằng tiếng Việt, ngắn gọn và thân thiện.
     client, default_model = get_client(customer.llm_provider)
 
     async def generate():
+        tenant_tools = await get_mcp_tools(customer.mcp_server_url, customer.mcp_auth_token)
+
         # 2. Gọi LLM với tools (MCP)
-        response = client.chat.completions.create(
-            model=customer.llm_model or default_model,
-            messages=[{"role": "system", "content": system_prompt}, *messages],
-            tools=tools,
-            stream=False,   # cần check tool_calls trước khi stream
-            max_tokens=800
-        )
+        params = {
+            "model": customer.llm_model or default_model,
+            "messages": [{"role": "system", "content": system_prompt}, *messages],
+            "stream": False,   # cần check tool_calls trước khi stream
+            "max_tokens": 800
+        }
+        if tenant_tools:
+            params["tools"] = tenant_tools
+
+        response = client.chat.completions.create(**params)
 
         msg = response.choices[0].message
 
@@ -71,7 +76,12 @@ Trả lời bằng tiếng Việt, ngắn gọn và thân thiện.
             tool_results = []
             for tc in msg.tool_calls:
                 args = json.loads(tc.function.arguments)
-                result = await execute_tool(tc.function.name, args, customer.id)
+                result = await execute_mcp_tool(
+                    customer.mcp_server_url, 
+                    customer.mcp_auth_token, 
+                    tc.function.name, 
+                    args
+                )
                 tool_results.append({
                     "role": "tool",
                     "tool_call_id": tc.id,

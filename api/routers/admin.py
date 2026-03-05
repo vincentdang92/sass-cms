@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, UploadFile, File
 from models.tenant import Customer, SessionLocal, generate_api_key, LLMProvider, ChatSession, ChatMessage, RequestTopup
 from services.rag import ensure_collection, delete_collection, list_points
 from sqlalchemy import func
 from datetime import datetime, date
 import os
+import shutil
+import uuid
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -24,6 +26,9 @@ def get_customer_me(x_api_key: str = Header(...)):
         "llm_model": c.llm_model,
         "qdrant_collection": c.qdrant_collection,
         "plan": c.plan,
+        "mcp_server_url": c.mcp_server_url,
+        "mcp_auth_token": c.mcp_auth_token,
+        "bot_avatar": c.bot_avatar,
     }
 
 def verify_admin(secret: str = Header(..., alias="x-admin-secret")):
@@ -89,6 +94,9 @@ def list_customers(x_admin_secret: str = Header(...)):
         "llm_model": c.llm_model,
         "qdrant_collection": c.qdrant_collection,
         "system_prompt": c.system_prompt,
+        "mcp_server_url": c.mcp_server_url,
+        "mcp_auth_token": c.mcp_auth_token,
+        "bot_avatar": c.bot_avatar,
     } for c in customers]
 
 # ── Update customer ───────────────────────────
@@ -105,6 +113,36 @@ def update_customer(customer_id: str, data: dict, x_admin_secret: str = Header(.
     db.commit()
     db.close()
     return {"status": "updated"}
+
+# ── Upload Avatar ────────────────────────────
+@router.post("/customers/{customer_id}/avatar")
+def upload_avatar(customer_id: str, file: UploadFile = File(...), x_admin_secret: str = Header(...)):
+    verify_admin(x_admin_secret)
+    db = SessionLocal()
+    c = db.query(Customer).filter_by(id=customer_id).first()
+    if not c:
+        db.close()
+        raise HTTPException(404, "Customer not found")
+        
+    ext = file.filename.split('.')[-1]
+    filename = f"{customer_id}_{uuid.uuid4().hex[:8]}.{ext}"
+    filepath = os.path.join("data/avatars", filename)
+    
+    with open(filepath, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+        
+    # Xoá file cũ nếu cần (tùy chọn)
+    # Cập nhật db
+    old_avatar = c.bot_avatar
+    c.bot_avatar = f"/avatars/{filename}"
+    db.commit()
+    db.close()
+    
+    if old_avatar and os.path.exists(f"data{old_avatar}"):
+        try: os.remove(f"data{old_avatar}")
+        except: pass
+
+    return {"status": "success", "avatar_url": f"/avatars/{filename}"}
 
 # ── Regenerate API Key ──────────────────────
 @router.post("/customers/{customer_id}/regenerate-key")

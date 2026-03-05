@@ -1,8 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from qdrant_client import QdrantClient
 from sqlalchemy import create_engine, text
 import os
+
+# Create directory for saving avatars
+os.makedirs("data/avatars", exist_ok=True)
 
 app = FastAPI(
     title="SaaS Chatbot API",
@@ -32,6 +36,8 @@ app.include_router(chat.router)
 app.include_router(kb.router)
 app.include_router(rag_search.router)
 app.include_router(crm.router)
+
+app.mount("/avatars", StaticFiles(directory="data/avatars"), name="avatars")
 
 # ── Health check endpoints ─────────────────────────────────────────────
 @app.get("/health", tags=["System"])
