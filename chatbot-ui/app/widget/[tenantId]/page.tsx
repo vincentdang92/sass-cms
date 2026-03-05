@@ -14,6 +14,7 @@ import { LoadingCard } from '@/components/LoadingCard'
 export default function Widget() {
   const [apiKey, setApiKey] = useState('')
   const [botName, setBotName] = useState('AI Tư Vấn')
+  const [sessionId] = useState(() => crypto.randomUUID())
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -24,7 +25,8 @@ export default function Widget() {
 
   const { messages, input, handleInputChange, handleSubmit, isLoading } = useChat({
     api: '/api/chat',
-    body: { apiKey },
+    id: sessionId,
+    body: { apiKey, id: sessionId },
     initialMessages: [{
       id: 'welcome',
       role: 'assistant',

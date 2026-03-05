@@ -21,7 +21,7 @@ const nextConfig = {
                     },
                     {
                         key: 'Content-Security-Policy',
-                        value: "frame-ancestors *",
+                        value: "frame-ancestors * 'self' file: http: https:;",
                     },
                 ],
             },

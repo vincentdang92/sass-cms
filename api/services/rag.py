@@ -25,7 +25,7 @@ def embed(text: str) -> list[float]:
     return _model.encode(text[:2000]).tolist()
 
 
-def ingest(collection: str, chunks: list[dict]):
+def ingest(collection: str, chunks: list[dict], chunk_size: int = 200):
     """chunks = [{"content": "...", "metadata": {...}}]"""
     ensure_collection(collection)
     points = [
@@ -42,14 +42,15 @@ def ingest(collection: str, chunks: list[dict]):
 
 def search(collection: str, query: str, top_k: int = 5) -> list[str]:
     try:
-        results = qdrant.search(
+        results = qdrant.query_points(
             collection_name=collection,
-            query_vector=embed(query),
+            query=embed(query),
             limit=top_k,
-            score_threshold=0.55  # MiniLM score thấp hơn OpenAI một chút
-        )
+            score_threshold=0.35  # MiniLM scores ~0.3-0.7, OpenAI scores ~0.7-0.95
+        ).points
         return [r.payload["content"] for r in results]
-    except Exception:
+    except Exception as e:
+        print(f"[RAG search error] {e}")
         return []
 
 

@@ -53,16 +53,16 @@ tools = [
 
 async def execute_tool(name: str, args: dict, tenant_id: str) -> str:
     if name == "check_domain_availability":
-        # Query DomainDB
-        with engine.connect() as conn:
-            result = conn.execute(
-                text("SELECT available, price FROM domains WHERE name = :d"),
-                {"d": args["domain"]}
-            ).fetchone()
-        if result:
-            status = "available ✅" if result.available else "đã có người đăng ký ❌"
-            return f"Domain {args['domain']}: {status}, giá: {result.price:,}đ/năm"
-        return f"Không tìm thấy thông tin cho {args['domain']}"
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(f"https://zonedns.vn/whoisvn.php?domain={args['domain']}")
+                text_res = res.text.lower()
+                is_taken = "true" in text_res
+                status = "đã có người đăng ký ❌" if is_taken else "available ✅"
+                price_text = "" if is_taken else ", giá: 300,000đ/năm"
+                return f"Domain {args['domain']}: {status}{price_text}"
+            except Exception:
+                return f"Không thể kiểm tra {args['domain']} lúc này"
 
     elif name == "get_pricing":
         with engine.connect() as conn:

@@ -4,7 +4,7 @@ import { z } from 'zod'
 
 const apiUrl = process.env.CHATBOT_API_URL || 'http://localhost:8000'
 
-export const runtime = 'edge'
+export const runtime = 'nodejs'
 
 export async function POST(req: Request) {
   const { messages, apiKey, id } = await req.json()
@@ -82,12 +82,21 @@ Trả lời bằng tiếng Việt, ngắn gọn, thân thiện.`
         description: 'Kết quả kiểm tra domain',
         parameters: z.object({
           domain: z.string(),
-          available: z.boolean(),
-          price: z.number().optional(),
-          registrar: z.string().optional(),
-          expires: z.string().optional(),
         }),
-        execute: async (args) => args,
+        execute: async ({ domain }) => {
+          try {
+            const res = await fetch(`https://zonedns.vn/whoisvn.php?domain=${domain}`)
+            const text = await res.text()
+            const isTaken = text.includes('true')
+            return {
+              domain,
+              available: !isTaken,
+              price: !isTaken ? 300000 : undefined
+            }
+          } catch (e) {
+            return { domain, available: false }
+          }
+        },
       }),
       showSupportTicket: tool({
         description: 'Form hỗ trợ kỹ thuật',
@@ -106,41 +115,35 @@ Trả lời bằng tiếng Việt, ngắn gọn, thân thiện.`
     },
     onFinish: async ({ text, toolCalls, toolResults }) => {
       try {
-        // Prepare the new messages payload for the history endpoint
-        const fullMessages = [
-          ...messages, // Previous messages + latest user message
-          {
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: text,
-            tool_calls: (toolCalls || []).length > 0 ? toolCalls : undefined
-          }
-        ]
+        const sessionId = id || crypto.randomUUID()
+        // Save only the new exchange: last user message + new assistant reply
+        const lastUser = [...messages].reverse().find((m: any) => m.role === 'user')
+        const newMessages: any[] = []
 
-        // Add tool results if any
+        if (lastUser) {
+          newMessages.push({ id: lastUser.id || crypto.randomUUID(), role: 'user', content: lastUser.content })
+        }
+        newMessages.push({
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: text,
+          tool_calls: (toolCalls || []).length > 0 ? toolCalls : undefined,
+        })
         if (toolResults && toolResults.length > 0) {
           for (const tr of toolResults) {
-            fullMessages.push({
-              id: crypto.randomUUID(),
-              role: 'tool',
-              content: JSON.stringify(tr.result),
-              tool_call_id: tr.toolCallId
-            })
+            newMessages.push({ id: crypto.randomUUID(), role: 'tool', content: JSON.stringify(tr.result), tool_call_id: tr.toolCallId })
           }
         }
 
-        // Send to FastAPI to save
-        await fetch(`${apiUrl}/chat/history`, {
+        const saveRes = await fetch(`${apiUrl}/chat/history`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-          },
-          body: JSON.stringify({
-            session_id: id, // The chat session ID from useChat
-            messages: fullMessages,
-          }),
+          headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
+          body: JSON.stringify({ session_id: sessionId, messages: newMessages }),
         })
+        if (!saveRes.ok) {
+          const err = await saveRes.text()
+          console.error('[chat history save failed]', saveRes.status, err)
+        }
       } catch (err) {
         console.error('Failed to save chat history', err)
       }
