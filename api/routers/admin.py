@@ -22,6 +22,8 @@ def get_customer_me(x_api_key: str = Header(...)):
         "id": c.id,
         "bot_name": c.bot_name,
         "system_prompt": c.system_prompt,
+        "industry": c.industry,
+        "greeting_message": c.greeting_message,
         "llm_provider": c.llm_provider,
         "llm_model": c.llm_model,
         "qdrant_collection": c.qdrant_collection,
@@ -29,6 +31,7 @@ def get_customer_me(x_api_key: str = Header(...)):
         "mcp_server_url": c.mcp_server_url,
         "mcp_auth_token": c.mcp_auth_token,
         "bot_avatar": c.bot_avatar,
+        "quick_questions": c.quick_questions,
     }
 
 def verify_admin(secret: str = Header(..., alias="x-admin-secret")):
@@ -55,9 +58,11 @@ def create_customer(data: dict, _=None):
         llm_model=data.get("llm_model", "deepseek-chat"),
         bot_name=data.get("bot_name", "AI Assistant"),
         system_prompt=data.get("system_prompt",
-            f"Bạn là trợ lý tư vấn domain/hosting của {data['name']}. "
+            f"Bạn là trợ lý tư vấn của {data['name']}. "
             "Chỉ trả lời dựa trên thông tin được cung cấp. Trả lời ngắn gọn, thân thiện."
         ),
+        industry=data.get("industry", "Tổng hợp"),
+        greeting_message=data.get("greeting_message", "Xin chào! Mình có thể giúp gì cho bạn?"),
         plan=data.get("plan", "free"),
         max_requests_day=data.get("max_requests_day", 100)
     )
@@ -94,10 +99,44 @@ def list_customers(x_admin_secret: str = Header(...)):
         "llm_model": c.llm_model,
         "qdrant_collection": c.qdrant_collection,
         "system_prompt": c.system_prompt,
+        "industry": c.industry,
+        "greeting_message": c.greeting_message,
         "mcp_server_url": c.mcp_server_url,
         "mcp_auth_token": c.mcp_auth_token,
         "bot_avatar": c.bot_avatar,
+        "quick_questions": c.quick_questions,
     } for c in customers]
+
+# ── Lấy thông tin 1 customer ─────────────────
+@router.get("/customers/{customer_id}")
+def get_customer(customer_id: str, x_admin_secret: str = Header(...)):
+    verify_admin(x_admin_secret)
+    db = SessionLocal()
+    c = db.query(Customer).filter_by(id=customer_id).first()
+    db.close()
+    if not c:
+        raise HTTPException(404, "Customer not found")
+    return {
+        "id": c.id,
+        "name": c.name,
+        "email": c.email,
+        "plan": c.plan,
+        "active": c.is_active,
+        "requests_today": c.requests_today,
+        "max_requests_day": c.max_requests_day,
+        "api_key": c.api_key,
+        "bot_name": c.bot_name,
+        "llm_provider": c.llm_provider,
+        "llm_model": c.llm_model,
+        "qdrant_collection": c.qdrant_collection,
+        "system_prompt": c.system_prompt,
+        "industry": c.industry,
+        "greeting_message": c.greeting_message,
+        "mcp_server_url": c.mcp_server_url,
+        "mcp_auth_token": c.mcp_auth_token,
+        "bot_avatar": c.bot_avatar,
+        "quick_questions": c.quick_questions,
+    }
 
 # ── Update customer ───────────────────────────
 @router.patch("/customers/{customer_id}")
@@ -109,6 +148,9 @@ def update_customer(customer_id: str, data: dict, x_admin_secret: str = Header(.
         raise HTTPException(404, "Customer not found")
     for k, v in data.items():
         if hasattr(c, k) and k not in ('id', 'api_key', 'qdrant_collection'):
+            import json
+            if k == "quick_questions" and isinstance(v, list):
+                v = json.dumps(v, ensure_ascii=False)
             setattr(c, k, v)
     db.commit()
     db.close()
@@ -160,23 +202,53 @@ def regenerate_api_key(customer_id: str, x_admin_secret: str = Header(...)):
 
 # ── Xem KB của customer ───────────────────────
 @router.get("/customers/{customer_id}/kb")
-def get_kb(customer_id: str, x_admin_secret: str = Header(...)):
+def get_kb(
+    customer_id: str,
+    x_admin_secret: str = Header(...),
+    page: int = 1,
+    limit: int = 20,
+    kb_type: str = None
+):
     verify_admin(x_admin_secret)
     db = SessionLocal()
     c = db.query(Customer).filter_by(id=customer_id).first()
     db.close()
     if not c:
         raise HTTPException(404, "Not found")
-    docs = list_points(c.qdrant_collection)
-    # Normalize: list_points returns flat {id, content, filename, type, customer_id, ...}
-    # Convert to consistent structure for frontend
+    
+    offset = (page - 1) * limit
+    docs, total = list_points(c.qdrant_collection, limit=limit, offset=offset, kb_type=kb_type)
+    
     normalized = []
-    for d in docs[:50]:
+    for d in docs:
         doc_id = d.get("id", "")
         content = d.get("content", "")
         meta = {k: v for k, v in d.items() if k not in ("id", "content")}
         normalized.append({"id": doc_id, "content": content, "metadata": meta})
-    return {"collection": c.qdrant_collection, "total": len(docs), "docs": normalized}
+    
+    return {
+        "collection": c.qdrant_collection,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "docs": normalized
+    }
+
+
+# ── Search KB (Semantic Vector Search) ────────
+@router.get("/customers/{customer_id}/kb/search")
+def search_kb(customer_id: str, q: str, top_k: int = 10, x_admin_secret: str = Header(...)):
+    verify_admin(x_admin_secret)
+    if not q or not q.strip():
+        raise HTTPException(400, "Query cannot be empty")
+    db = SessionLocal()
+    c = db.query(Customer).filter_by(id=customer_id).first()
+    db.close()
+    if not c:
+        raise HTTPException(404, "Not found")
+    from services.rag import search_with_scores
+    results = search_with_scores(c.qdrant_collection, q.strip(), top_k=top_k)
+    return {"query": q, "results": results, "total": len(results)}
 
 # ── Xoá KB ───────────────────────────────────
 @router.delete("/customers/{customer_id}/kb")
@@ -190,6 +262,88 @@ def clear_kb(customer_id: str, x_admin_secret: str = Header(...)):
     delete_collection(c.qdrant_collection)
     ensure_collection(c.qdrant_collection)
     return {"status": "kb cleared"}
+
+
+# ── Cập nhật 1 chunk ─────────────────────────
+@router.put("/customers/{customer_id}/kb/{doc_id}")
+def update_kb_doc(customer_id: str, doc_id: str, data: dict, x_admin_secret: str = Header(...)):
+    verify_admin(x_admin_secret)
+    db = SessionLocal()
+    c = db.query(Customer).filter_by(id=customer_id).first()
+    db.close()
+    if not c:
+        raise HTTPException(404, "Not found")
+    
+    content = data.get("content")
+    if not content:
+        raise HTTPException(400, "Content cannot be empty")
+        
+    from services.rag import update_point
+    try:
+        # Nếu doc_id là int (do metadata truyền từ frontend sang), Qdrant có thể dùng int. Nhưng thường là UUID
+        update_point(c.qdrant_collection, doc_id, content)
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+# ── Xóa 1 chunk ──────────────────────────────
+@router.delete("/customers/{customer_id}/kb/{doc_id}")
+def delete_kb_doc(customer_id: str, doc_id: str, x_admin_secret: str = Header(...)):
+    verify_admin(x_admin_secret)
+    db = SessionLocal()
+    c = db.query(Customer).filter_by(id=customer_id).first()
+    db.close()
+    if not c:
+        raise HTTPException(404, "Not found")
+        
+    from services.rag import delete_point
+    try:
+        delete_point(c.qdrant_collection, doc_id)
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+# ── Thêm Text / QA thủ công ──────────────────
+@router.post("/customers/{customer_id}/kb/text")
+def add_manual_text(customer_id: str, data: dict, x_admin_secret: str = Header(...)):
+    verify_admin(x_admin_secret)
+    db = SessionLocal()
+    c = db.query(Customer).filter_by(id=customer_id).first()
+    db.close()
+    if not c:
+        raise HTTPException(404, "Not found")
+        
+    title = data.get("title", "Manual Text")
+    content = data.get("content", "")
+    if not content:
+        raise HTTPException(400, "Content empty")
+        
+    from services.rag import ingest
+    try:
+        ingest(c.qdrant_collection, [{"content": content, "metadata": {"filename": title, "type": "manual"}}])
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+# ── Xóa toàn bộ file ─────────────────────────
+@router.delete("/customers/{customer_id}/kb/file")
+def delete_kb_file(customer_id: str, filename: str, x_admin_secret: str = Header(...)):
+    verify_admin(x_admin_secret)
+    db = SessionLocal()
+    c = db.query(Customer).filter_by(id=customer_id).first()
+    db.close()
+    if not c:
+        raise HTTPException(404, "Not found")
+        
+    from services.rag import delete_by_filename
+    try:
+        delete_by_filename(c.qdrant_collection, filename)
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 # ── Chat History ────────────────────────────────────────
@@ -481,3 +635,89 @@ def get_topup_history(
             "created_at": r.created_at.isoformat() if r.created_at else None,
         } for r in rows]
     }
+
+
+# ── Webhook: CMS/ERP push realtime KB update ────────────────────────────────
+@router.post("/webhook/kb-update")
+async def webhook_kb_update(payload: dict, x_admin_secret: str = Header(...)):
+    """
+    Webhook nhận event từ CMS/ERP để update Realtime KB.
+
+    Payload:
+    {
+        "customer_id": "tenant-abc",
+        "event_type": "price_update" | "promo_create" | "promo_expire",
+        "data": {
+            // price_update:
+            "source_id": "price_iphone16_pro",
+            "content": "iPhone 16 Pro: 29.990.000đ (update 19/3)",
+            "category": "pricing",
+            "valid_to": null,
+
+            // promo_create:
+            "source_id": "promo_summer2025",
+            "content": "Giảm 20% toàn bộ iPhone từ 20-31/03",
+            "category": "flash_sale",
+            "valid_from": "2025-03-20T00:00:00Z",
+            "valid_to": "2025-03-31T23:59:59Z",
+
+            // promo_expire:
+            "source_id": "promo_summer2025"
+        }
+    }
+    """
+    verify_admin(x_admin_secret)
+
+    customer_id = payload.get("customer_id")
+    event_type  = payload.get("event_type")
+    data        = payload.get("data", {})
+
+    if not customer_id or not event_type:
+        raise HTTPException(400, "customer_id and event_type are required")
+
+    db = SessionLocal()
+    c = db.query(Customer).filter_by(id=customer_id).first()
+    db.close()
+    if not c:
+        raise HTTPException(404, f"Customer '{customer_id}' not found")
+
+    from services.rag import upsert_by_source_id, delete_by_source_id
+    from datetime import datetime, timezone
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if event_type in ("price_update", "promo_create"):
+        source_id = data.get("source_id")
+        content   = data.get("content")
+        if not source_id or not content:
+            raise HTTPException(400, "data.source_id and data.content are required")
+
+        metadata = {
+            "category":    data.get("category", "general"),
+            "valid_from":  data.get("valid_from") or now_iso,
+            "valid_to":    data.get("valid_to"),      # None = không hạn
+            "ttl_minutes": data.get("ttl_minutes", 15),
+            "version":     data.get("version", 1),
+            "customer_id": customer_id,
+        }
+        point_id = upsert_by_source_id(c.qdrant_collection, source_id, content, metadata)
+        return {"status": "upserted", "source_id": source_id, "point_id": point_id}
+
+    elif event_type == "promo_expire":
+        source_id = data.get("source_id")
+        if not source_id:
+            raise HTTPException(400, "data.source_id is required")
+        delete_by_source_id(c.qdrant_collection, source_id)
+        return {"status": "expired", "source_id": source_id}
+
+    else:
+        raise HTTPException(400, f"Unknown event_type: {event_type}")
+
+
+# ── System Stats: Redis ──────────────────────────────────────────────────────
+@router.get("/system/redis-stats")
+def get_system_redis_stats(x_admin_secret: str = Header(...)):
+    """API cho Admin Dashboard hiển thị thông tin Redis Cache"""
+    verify_admin(x_admin_secret)
+    from services.cache import get_redis_stats
+    return get_redis_stats()

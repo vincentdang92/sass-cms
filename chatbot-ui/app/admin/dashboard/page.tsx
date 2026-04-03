@@ -7,9 +7,22 @@ interface Stats {
     requests: number
 }
 
+interface RedisStats {
+    status: string
+    uptime_days?: number
+    memory_used_mb?: number
+    memory_peak_mb?: number
+    connected_clients?: number
+    total_keys?: number
+    hits?: number
+    misses?: number
+    error?: string
+}
+
 export default function DashboardPage() {
     const [stats, setStats] = useState<Stats>({ total: 0, active: 0, requests: 0 })
     const [tenants, setTenants] = useState<any[]>([])
+    const [redisStats, setRedisStats] = useState<RedisStats | null>(null)
     const [loading, setLoading] = useState(true)
     const apiUrl = process.env.NEXT_PUBLIC_CHATBOT_API_URL || 'http://127.0.0.1:8001'
 
@@ -32,6 +45,13 @@ export default function DashboardPage() {
                 }
             })
             .finally(() => setLoading(false))
+
+        fetch(`${apiUrl}/admin/system/redis-stats`, {
+            headers: { 'x-admin-secret': secret }
+        })
+            .then(r => r.json())
+            .then(data => setRedisStats(data))
+            .catch(() => setRedisStats({ status: 'offline', error: 'Không thể kết nối API' }))
     }, [apiUrl])
 
     if (loading) {
@@ -73,6 +93,68 @@ export default function DashboardPage() {
                     <div className="admin-stat-value" style={{ color: 'var(--admin-warning)' }}>RAG</div>
                     <div className="admin-stat-label">Engine đang dùng</div>
                 </div>
+            </div>
+
+            {/* Redis Cache Stats Table */}
+            <div className="admin-card" style={{ marginBottom: 24 }}>
+                <div className="admin-section-header">
+                    <div>
+                        <span className="admin-section-title">⚡ Trạng thái Redis Cache</span>
+                        <div style={{ fontSize: 13, color: 'var(--admin-text-muted)', marginTop: 4 }}>
+                            Bộ đệm tăng tốc AI RAG và Memory Storage
+                            {redisStats && <span className={`badge ${redisStats.status === 'online' ? 'badge-green' : 'badge-red'}`} style={{ marginLeft: 8 }}>{redisStats.status === 'online' ? 'Online' : 'Offline'}</span>}
+                        </div>
+                    </div>
+                </div>
+                
+                {!redisStats ? (
+                    <div style={{ padding: 20, textAlign: 'center', color: 'var(--admin-text-muted)' }}>Đang tải...</div>
+                ) : redisStats.status === 'offline' ? (
+                    <div className="admin-empty" style={{ padding: 20 }}>
+                        <div className="admin-empty-icon" style={{ fontSize: 24 }}>⚠️</div>
+                        <h4 style={{ margin: '8px 0', fontSize: 14 }}>Redis đang tắt</h4>
+                        <p style={{ fontSize: 13, margin: 0, color: 'var(--admin-danger)' }}>{redisStats.error || 'Vui lòng kiểm tra Docker container chatbot-redis'}</p>
+                    </div>
+                ) : (
+                    <div className="admin-table-wrap">
+                        <table className="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Uptime (ngày)</th>
+                                    <th>Bộ nhớ dùng / Peak (MB)</th>
+                                    <th>Keys đang lưu</th>
+                                    <th>Clients đang kết nối</th>
+                                    <th>Tỉ lệ Hit / Miss</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>{redisStats.uptime_days}</td>
+                                    <td>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                            <span>{redisStats.memory_used_mb}</span>
+                                            <span style={{ color: 'var(--admin-text-muted)', fontSize: 12 }}>/ {redisStats.memory_peak_mb}</span>
+                                        </div>
+                                    </td>
+                                    <td><span className="badge badge-blue">{redisStats.total_keys}</span></td>
+                                    <td>{redisStats.connected_clients}</td>
+                                    <td>
+                                        <div style={{ display: 'flex', gap: 6 }}>
+                                            <span style={{ color: 'var(--admin-success)', fontWeight: 600 }}>{redisStats.hits || 0}</span>
+                                            <span style={{ color: 'var(--admin-text-muted)' }}>/</span>
+                                            <span style={{ color: 'var(--admin-warning)' }}>{redisStats.misses || 0}</span>
+                                        </div>
+                                        {((redisStats.hits || 0) + (redisStats.misses || 0) > 0) && (
+                                            <div style={{ fontSize: 11, color: 'var(--admin-text-muted)', marginTop: 4 }}>
+                                                Hit rate: {Math.round(((redisStats.hits || 0) / ((redisStats.hits || 0) + (redisStats.misses || 0))) * 100)}%
+                                            </div>
+                                        )}
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                )}
             </div>
 
             {/* Recent Tenants Table */}

@@ -18,6 +18,8 @@ export default function NewTenantPage() {
         llm_model: 'deepseek-chat',
         plan: 'free',
         max_requests_day: 100,
+        industry: '',
+        greeting_message: 'Xin chào! Mình có thể giúp gì cho bạn?',
     })
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -162,6 +164,27 @@ export default function NewTenantPage() {
                         <div className="admin-form-group">
                             <label className="admin-label">Giới hạn requests/ngày</label>
                             <input className="admin-input" type="number" value={form.max_requests_day} onChange={e => setForm(f => ({ ...f, max_requests_day: Number(e.target.value) }))} />
+                        </div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
+                        <div className="admin-form-group">
+                            <label className="admin-label">Lĩnh vực hoạt động</label>
+                            <input 
+                                className="admin-input" 
+                                placeholder="VD: Dịch vụ làm móng, Bán quần áo..." 
+                                value={form.industry} 
+                                onChange={e => setForm(f => ({ ...f, industry: e.target.value }))} 
+                            />
+                        </div>
+                        <div className="admin-form-group">
+                            <label className="admin-label">Câu chào mặc định (Greeting Message)</label>
+                            <input 
+                                className="admin-input" 
+                                placeholder="Xin chào! Mình có thể giúp gì cho bạn?" 
+                                value={form.greeting_message} 
+                                onChange={e => setForm(f => ({ ...f, greeting_message: e.target.value }))} 
+                            />
                         </div>
                     </div>
 

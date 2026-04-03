@@ -1,5 +1,6 @@
 fastapi
 uvicorn[standard]
+gunicorn
 sqlalchemy
 psycopg2-binary
 openai
@@ -12,3 +13,8 @@ pydantic[email]
 pdfplumber
 openpyxl
 pandas
+redis[hiredis]
+python-magic
+langchain-text-splitters
+langdetect
+rank-bm25

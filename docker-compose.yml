@@ -1,9 +1,24 @@
 services:
+  nginx:
+    image: nginx:alpine
+    container_name: chatbot-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/html:/etc/nginx/html:ro
+    depends_on:
+      - api
+    networks:
+      - chatbot-net
+    mem_limit: 64m
+    restart: always
+
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     ports:
-      - "3000:8080"
+      - "3008:8080"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     volumes:
@@ -33,21 +48,43 @@ services:
     build: ./api
     container_name: chatbot-api
     ports:
-      - "8001:8000"
+      - "8001:8000" # Dev: expose ra host cho Next.js dev local. Remove khi prod only dùng nginx
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ADMIN_SECRET=${ADMIN_SECRET}
       - WHOIS_API_KEY=${WHOIS_API_KEY}
+      # Production security
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
+      - SYSTEM_DOCS_USER=${SYSTEM_DOCS_USER:-admin}
+      - SYSTEM_DOCS_PASS=${SYSTEM_DOCS_PASS:-changeme}
+      - BM25_INDEX_DIR=/data/bm25_indexes  # Hybrid Search: BM25 per-collection indexes
     volumes:
       - ./api:/app
-    mem_limit: 1g # sentence-transformers cần ~300MB
-    memswap_limit: 1g
+      - bm25-indexes:/data/bm25_indexes    # Hybrid Search: persist BM25 indexes
+    mem_limit: 4g # multilingual-MiniLM-L12-v2 ~470MB, cần headroom cho torch + FastAPI
+    memswap_limit: 4g
     depends_on:
       - qdrant
       - postgres
+      - redis
+    networks:
+      - chatbot-net
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: chatbot-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    mem_limit: 128m
+    memswap_limit: 128m
     networks:
       - chatbot-net
     restart: always
@@ -95,3 +132,5 @@ volumes:
   open-webui-data:
   qdrant-data:
   postgres-data:
+  redis-data:
+  bm25-indexes:  # Hybrid Search: BM25 lexical indexes per tenant collection

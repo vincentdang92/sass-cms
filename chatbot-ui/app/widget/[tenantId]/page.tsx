@@ -1,7 +1,7 @@
 'use client'
-import { useChat } from 'ai/react'
-import type { Message, ToolInvocation } from 'ai'
-import { useEffect, useRef, useState } from 'react'
+import { DefaultChatTransport, type UIMessage } from 'ai'
+import { useChat } from '@ai-sdk/react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 
 // Render tools ở Client
 import { PricingCard } from '@/components/PricingCard'
@@ -15,36 +15,88 @@ export default function Widget() {
   const [apiKey, setApiKey] = useState('')
   const [botName, setBotName] = useState('AI Tư Vấn')
   const [botAvatar, setBotAvatar] = useState('')
+  const [greeting, setGreeting] = useState('Xin chào! Tôi có thể giúp gì cho bạn?')
+  const [quickQuestions, setQuickQuestions] = useState<string[]>([])
   const [sessionId] = useState(() => crypto.randomUUID())
   const bottomRef = useRef<HTMLDivElement>(null)
 
+  // Use a ref so the latest apiKey is always available to DefaultChatTransport body
+  const apiKeyRef = useRef('')
+  const apiBaseUrl = process.env.NEXT_PUBLIC_CHATBOT_API_URL || 'http://localhost:8001'
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    setApiKey(params.get('key') || '')
+    const key = params.get('key') || ''
+    apiKeyRef.current = key
+    setApiKey(key)
     setBotName(params.get('name') || 'AI Tư Vấn')
 
-    // Config avatar from URL param, defaulting to api URL prefix if relative path
+    if (key) {
+      fetch(`/api/config?apiKey=${key}`)
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+          if (data) {
+            if (data.bot_name) setBotName(data.bot_name)
+            if (data.bot_avatar) {
+              // bot_avatar from API is typically a relative path like /avatars/xxx.jpg
+              const av = data.bot_avatar
+              setBotAvatar(av.startsWith('http') ? av : `${apiBaseUrl}${av}`)
+            }
+            if (data.quick_questions && Array.isArray(data.quick_questions)) {
+              setQuickQuestions(data.quick_questions)
+            }
+            if (data.greeting_message) {
+              setGreeting(data.greeting_message)
+            }
+          }
+        })
+        .catch(() => {})
+    }
+
+    // Avatar from URL param
     const avatarParam = params.get('avatar')
     if (avatarParam) {
-      if (avatarParam.startsWith('/')) {
-        const apiUrl = process.env.NEXT_PUBLIC_CHATBOT_API_URL || 'http://localhost:8001'
-        setBotAvatar(`${apiUrl}${avatarParam}`)
-      } else {
-        setBotAvatar(avatarParam)
-      }
+      setBotAvatar(avatarParam.startsWith('http') ? avatarParam : `${apiBaseUrl}${avatarParam}`)
     }
   }, [])
 
-  const { messages, input, handleInputChange, handleSubmit, isLoading } = useChat({
+  // Transport is stable — body is a function so it always reads latest apiKey from ref
+  const transport = useMemo(() => new DefaultChatTransport({
     api: '/api/chat',
+    body: () => ({ apiKey: apiKeyRef.current, id: sessionId })
+  }), [sessionId])
+
+  const { messages, sendMessage, status, setMessages } = useChat({
     id: sessionId,
-    body: { apiKey, id: sessionId },
-    initialMessages: [{
-      id: 'welcome',
-      role: 'assistant',
-      content: 'Xin chào! Tôi có thể giúp gì cho bạn về domain và hosting hôm nay?',
-    }] as Message[],
+    transport
   })
+
+  // Set initial welcome message if empty
+  useEffect(() => {
+    if (messages.length === 0 && status === 'ready' && greeting) {
+      setMessages([{
+        id: 'welcome',
+        role: 'assistant',
+        parts: [{ type: 'text', text: greeting }]
+      }])
+    }
+  }, [messages.length, status, setMessages, greeting])
+
+  const [input, setInput] = useState('')
+  const isLoading = status === 'submitted' || status === 'streaming'
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => setInput(e.target.value)
+
+  const handleSubmit = (e?: React.FormEvent<HTMLFormElement>) => {
+    e?.preventDefault()
+    if (!input.trim() || isLoading) return
+    sendMessage({ text: input })
+    setInput('')
+  }
+
+  const append = (msg: { role: string, content: string }) => {
+    sendMessage({ text: msg.content })
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -66,7 +118,7 @@ export default function Widget() {
       </div>
 
       <div className="messages-area">
-        {messages.map((m: Message) => (
+        {messages.map((m: UIMessage) => (
           <div key={m.id} className={`message-row ${m.role}`}>
             {m.role === 'assistant' && (
               <div className="avatar-sm" style={{ overflow: 'hidden', padding: botAvatar ? 0 : undefined, background: botAvatar ? 'transparent' : undefined }}>
@@ -75,28 +127,26 @@ export default function Widget() {
             )}
 
             <div className="bubble-wrapper">
-              {m.content && (
-                <div className={`bubble ${m.role}`}>
-                  <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{m.content}</p>
+              {/* Text Parts */}
+              {m.parts?.filter((p: any) => p.type === 'text').map((p: any, i: number) => (
+                <div key={`txt-${i}`} className={`bubble ${m.role}`}>
+                  <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{p.text}</p>
                 </div>
-              )}
+              ))}
 
-              {/* Client-side Tool Rendering */}
-              {m.toolInvocations?.map((tool: ToolInvocation) => {
-                if (!('result' in tool)) {
-                  return <LoadingCard key={tool.toolCallId} />
-                }
-
-                // Khi server execute xong, `result` sẽ chứa args
-                const args = tool.result
+              {/* Tool Parts */}
+              {m.parts?.filter((p: any) => p.type?.startsWith('tool-') || p.type === 'dynamic-tool').map((part: any, idx: number) => {
+                const toolName = part.type === 'dynamic-tool' ? part.toolName : part.type.replace('tool-', '');
+                const args = part.input || part.args || {};
+                const toolCallId = part.toolCallId || `tc-${idx}`;
 
                 return (
-                  <div key={tool.toolCallId} className="tool-component">
-                    {tool.toolName === 'showPricing' && <PricingCard {...args} apiKey={apiKey} />}
-                    {tool.toolName === 'showBuyForm' && <BuyForm {...args} apiKey={apiKey} />}
-                    {tool.toolName === 'showDomainResult' && <DomainResult {...args} apiKey={apiKey} />}
-                    {tool.toolName === 'showSupportTicket' && <SupportTicket {...args} apiKey={apiKey} />}
-                    {tool.toolName === 'showRating' && <RatingWidget {...args} apiKey={apiKey} />}
+                  <div key={toolCallId} className="tool-component">
+                    {toolName === 'showPricing' && <PricingCard {...args} apiKey={apiKey} />}
+                    {toolName === 'showBuyForm' && <BuyForm {...args} apiKey={apiKey} />}
+                    {toolName === 'showDomainResult' && <DomainResult {...args} apiKey={apiKey} />}
+                    {toolName === 'showSupportTicket' && <SupportTicket {...args} apiKey={apiKey} />}
+                    {toolName === 'showRating' && <RatingWidget {...args} apiKey={apiKey} />}
                   </div>
                 )
               })}
@@ -118,11 +168,27 @@ export default function Widget() {
         <div ref={bottomRef} />
       </div>
 
+      {quickQuestions.length > 0 && messages.length <= 1 && (
+        <div style={{ display: 'flex', gap: 8, padding: '10px 16px', overflowX: 'auto', borderBottom: '1px solid #e2e8f0', background: '#f8fafc', flexShrink: 0, scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}>
+          {quickQuestions.map((q, idx) => (
+            <button 
+              key={idx}
+              onClick={(e) => { e.preventDefault(); append({ role: 'user', content: q }) }}
+              style={{ padding: '6px 12px', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 16, fontSize: 13, color: '#334155', whiteSpace: 'nowrap', cursor: 'pointer', transition: 'background 0.2s', flexShrink: 0, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}
+              onMouseOver={e => e.currentTarget.style.background = '#f1f5f9'}
+              onMouseOut={e => e.currentTarget.style.background = '#fff'}
+            >
+              {q}
+            </button>
+          ))}
+        </div>
+      )}
+
       <form onSubmit={handleSubmit} className="input-area">
         <input
           value={input}
           onChange={handleInputChange}
-          placeholder="Hỏi về domain, hosting, VPS..."
+          placeholder="Hỏi gì đó..."
           disabled={isLoading}
           className="chat-input"
         />

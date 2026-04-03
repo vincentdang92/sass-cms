@@ -9,12 +9,16 @@ interface PricingItem {
 }
 
 interface Props {
-    category: 'domain' | 'hosting' | 'vps'
+    category: string
     items: PricingItem[]
     onBuy?: (item: PricingItem) => void
 }
 
-const categoryLabel = { domain: '🌐 Domain', hosting: '🖥️ Hosting', vps: '⚡ VPS' }
+const getCategoryLabel = (cat: string | undefined) => {
+    if (!cat) return '🏷️ Dịch vụ'
+    const labels: Record<string, string> = { domain: '🌐 Tên miền', hosting: '🖥️ Hosting', vps: '⚡ VPS' }
+    return labels[cat.toLowerCase()] || `🏷️ ${cat}`
+}
 
 export function PricingCard({ category, items, onBuy }: Props) {
     const [selected, setSelected] = useState<PricingItem | null>(null)
@@ -22,21 +26,21 @@ export function PricingCard({ category, items, onBuy }: Props) {
     return (
         <div className="component-card">
             <div className="component-header">
-                <span>{categoryLabel[category]}</span>
+                <span>{getCategoryLabel(category)}</span>
                 <span className="component-badge">Bảng giá</span>
             </div>
 
             <div className="pricing-grid">
-                {items.map((item, i) => (
+                {(items || []).map((item, i) => (
                     <div
                         key={i}
                         className={`pricing-item ${item.highlight ? 'highlight' : ''} ${selected?.name === item.name ? 'selected' : ''}`}
                         onClick={() => setSelected(item)}
                     >
-                        <div className="pricing-name">{item.name}</div>
+                        <div className="pricing-name">{item.name || 'Đang tải...'}</div>
                         <div className="pricing-price">
-                            {item.price.toLocaleString('vi-VN')}đ
-                            <span className="pricing-unit">/{item.unit}</span>
+                            {item.price?.toLocaleString('vi-VN') || 0}đ
+                            <span className="pricing-unit">/{item.unit || 'năm'}</span>
                         </div>
                         {item.highlight && <span className="popular-badge">Phổ biến</span>}
                     </div>

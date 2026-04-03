@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useMemo } from 'react'
 import { useParams } from 'next/navigation'
 
 interface Tenant {
@@ -8,6 +8,8 @@ interface Tenant {
     plan: string; max_requests_day: number; api_key: string
     active: boolean; requests_today: number; qdrant_collection: string
     mcp_server_url?: string; mcp_auth_token?: string; bot_avatar?: string
+    quick_questions?: string | string[]
+    industry?: string; greeting_message?: string;
 }
 
 interface KBDoc { id: string; content: string; metadata: Record<string, any> }
@@ -30,6 +32,10 @@ interface TopupRecord {
     id: number; amount: number; reason: string; note: string
     balance_before: number; balance_after: number; created_at: string
 }
+interface KBJob {
+    id: string; filename: string; status: 'pending' | 'processing' | 'completed' | 'failed';
+    total_chunks: number; processed_chunks: number; error_message?: string; created_at: string;
+}
 
 const ALLOWED_TYPES = ['.txt', '.md', '.pdf', '.xlsx', '.xls', '.csv', '.json']
 const PLANS = [
@@ -43,7 +49,7 @@ export default function TenantDetailPage() {
     const tenantId = params.tenantId as string
     const [tenant, setTenant] = useState<Tenant | null>(null)
     const [loading, setLoading] = useState(true)
-    const [tab, setTab] = useState<'settings' | 'kb' | 'chat' | 'quota'>('settings')
+    const [tab, setTab] = useState<'settings' | 'kb' | 'realtime_kb' | 'chat' | 'quota'>('settings')
     const [activeCodeTab, setActiveCodeTab] = useState<'php' | 'node' | 'python'>('php')
 
     // Settings
@@ -53,15 +59,44 @@ export default function TenantDetailPage() {
     const [regenKey, setRegenKey] = useState('')
     const [uploadingAvatar, setUploadingAvatar] = useState(false)
     const avatarInputRef = useRef<HTMLInputElement>(null)
+    const [quickQuestions, setQuickQuestions] = useState<string[]>([])
 
     // KB
     const [kbDocs, setKbDocs] = useState<KBDoc[]>([])
+    const [kbTotal, setKbTotal] = useState(0)
+    const [kbPage, setKbPage] = useState(1)
     const [kbLoading, setKbLoading] = useState(false)
     const [uploadFiles, setUploadFiles] = useState<File[]>([])
     const [uploading, setUploading] = useState(false)
     const [uploadMsg, setUploadMsg] = useState('')
     const [dragover, setDragover] = useState(false)
     const fileRef = useRef<HTMLInputElement>(null)
+    const [editingDoc, setEditingDoc] = useState<any>(null)
+    const [editingContent, setEditingContent] = useState('')
+    const [editingScore, setEditingScore] = useState<number | null>(null)
+    const [savingDoc, setSavingDoc] = useState(false)
+    const [showManualModal, setShowManualModal] = useState(false)
+    const [manualTitle, setManualTitle] = useState('')
+    const [manualContent, setManualContent] = useState('')
+    const [savingManual, setSavingManual] = useState(false)
+    const [expandedFiles, setExpandedFiles] = useState<Record<string, boolean>>({})
+    const [kbSearchQuery, setKbSearchQuery] = useState('')
+    const [kbSearchResults, setKbSearchResults] = useState<{id:string;score:number;content:string;filename:string;type:string}[] | null>(null)
+    const [kbSearchLoading, setKbSearchLoading] = useState(false)
+    const searchDebounceRef = useRef<NodeJS.Timeout | null>(null)
+    const [kbJobs, setKbJobs] = useState<KBJob[]>([])
+    const prevJobsRef = useRef<KBJob[]>([])
+    const [toastMsg, setToastMsg] = useState('')
+    const toastTimerRef = useRef<NodeJS.Timeout | null>(null)
+
+    // Realtime KB
+    const [realtimeDocs, setRealtimeDocs] = useState<KBDoc[]>([])
+    const [realtimeTotal, setRealtimeTotal] = useState(0)
+    const [realtimePage, setRealtimePage] = useState(1)
+    const [realtimeLoading, setRealtimeLoading] = useState(false)
+    const [showRealtimeModal, setShowRealtimeModal] = useState(false)
+    const [realtimeForm, setRealtimeForm] = useState({ source_id: '', content: '', category: 'pricing', valid_from: '', valid_to: '', ttl_minutes: 60 })
+    const [savingRealtime, setSavingRealtime] = useState(false)
 
     // Chat History
     const [chatStats, setChatStats] = useState<ChatStats | null>(null)
@@ -87,27 +122,58 @@ export default function TenantDetailPage() {
     const adminSecret = typeof window !== 'undefined' ? localStorage.getItem('admin_secret') || '' : ''
     const h = { 'x-admin-secret': adminSecret }
 
-    // Load tenant
+    // Load tenant — gọi trực tiếp endpoint đơn thay vì load all
     useEffect(() => {
         if (!tenantId) return
-        fetch(`${apiUrl}/admin/customers`, { headers: h, cache: 'no-store' })
-            .then(r => r.json())
-            .then((data: any[]) => {
-                const found = data.find((c: any) => c.id === tenantId)
-                if (found) setTenant(found)
+        fetch(`${apiUrl}/admin/customers/${tenantId}`, { headers: h, cache: 'no-store' })
+            .then(r => r.ok ? r.json() : null)
+            .then((data: any) => {
+                if (data) {
+                    setTenant(data)
+                    try {
+                        const qq = data.quick_questions
+                        setQuickQuestions(qq ? (typeof qq === 'string' ? JSON.parse(qq) : qq) : [])
+                    } catch { setQuickQuestions([]) }
+                }
             })
             .finally(() => setLoading(false))
     }, [tenantId])
 
-    // KB docs
+    // Load KB (Static)
     useEffect(() => {
         if (tab !== 'kb' || !tenantId) return
-        setKbLoading(true)
-        fetch(`${apiUrl}/admin/customers/${tenantId}/kb`, { headers: h })
-            .then(r => r.json())
-            .then(data => setKbDocs(data.docs || []))
-            .finally(() => setKbLoading(false))
+        loadKb(1)
     }, [tab, tenantId])
+
+    // Load Realtime KB
+    useEffect(() => {
+        if (tab !== 'realtime_kb' || !tenantId) return
+        loadRealtimeKb(1)
+    }, [tab, tenantId])
+
+    const loadKb = (page: number) => {
+        setKbLoading(true)
+        fetch(`${apiUrl}/admin/customers/${tenantId}/kb?kb_type=static&page=${page}&limit=20`, { headers: h })
+            .then(r => r.json())
+            .then(data => {
+                setKbDocs(data.docs || [])
+                setKbTotal(data.total || 0)
+                setKbPage(page)
+            })
+            .finally(() => setKbLoading(false))
+    }
+
+    const loadRealtimeKb = (page: number) => {
+        setRealtimeLoading(true)
+        fetch(`${apiUrl}/admin/customers/${tenantId}/kb?kb_type=realtime&page=${page}&limit=20`, { headers: h })
+            .then(r => r.json())
+            .then(data => {
+                setRealtimeDocs(data.docs || [])
+                setRealtimeTotal(data.total || 0)
+                setRealtimePage(page)
+            })
+            .finally(() => setRealtimeLoading(false))
+    }
 
     // Chat stats + sessions
     useEffect(() => {
@@ -219,11 +285,13 @@ export default function TenantDetailPage() {
                 headers: { 'Content-Type': 'application/json', ...h },
                 body: JSON.stringify({
                     bot_name: tenant.bot_name, system_prompt: tenant.system_prompt,
+                    industry: tenant.industry, greeting_message: tenant.greeting_message,
                     llm_provider: tenant.llm_provider, llm_model: tenant.llm_model,
                     plan: tenant.plan, max_requests_day: tenant.max_requests_day,
                     is_active: tenant.active,
                     mcp_server_url: tenant.mcp_server_url,
                     mcp_auth_token: tenant.mcp_auth_token,
+                    quick_questions: quickQuestions
                 })
             })
             setSaveMsg(res.ok ? '✅ Đã lưu thành công!' : '❌ Lỗi khi lưu. Thử lại!')
@@ -280,9 +348,10 @@ export default function TenantDetailPage() {
             })
             const data = await res.json()
             if (res.ok) {
-                setUploadMsg(`✅ Đã upload! ${data.uploaded_chunks} chunks từ ${data.files} file.`)
+                setUploadMsg(`⏳ Đang xử lý file trong background... (Mã job: ${data.job_id.slice(0,8)})`)
                 setUploadFiles([])
-                fetch(`${apiUrl}/admin/customers/${tenantId}/kb`, { headers: h }).then(r => r.json()).then(d => setKbDocs(d.docs || []))
+                // Start polling immediately
+                loadKbJobs()
             } else {
                 setUploadMsg(`❌ Upload thất bại: ${data.detail || 'Lỗi không xác định'}`)
             }
@@ -290,10 +359,241 @@ export default function TenantDetailPage() {
         finally { setUploading(false) }
     }
 
+    const loadKbJobs = async () => {
+        if (!tenant) return
+        try {
+            const res = await fetch(`${apiUrl}/kb/jobs`, { headers: { 'x-api-key': tenant.api_key } })
+            if (res.ok) {
+                const data: KBJob[] = await res.json()
+                const prev = prevJobsRef.current
+                prevJobsRef.current = data
+                setKbJobs(data)
+
+                // Detect newly completed jobs (compare with ref, not stale closure)
+                const newlyDone = data.filter(j =>
+                    j.status === 'completed' &&
+                    prev.some(pj => pj.id === j.id && pj.status !== 'completed')
+                )
+                if (newlyDone.length > 0) {
+                    const names = newlyDone.map(j => j.filename).join(', ')
+                    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+                    setToastMsg(`✅ Xử lý KB xong: ${names}`)
+                    toastTimerRef.current = setTimeout(() => setToastMsg(''), 6000)
+                    loadKb(1) // Refresh KB list after completion
+                }
+
+                // Detect failed jobs
+                const newlyFailed = data.filter(j =>
+                    j.status === 'failed' &&
+                    prev.some(pj => pj.id === j.id && pj.status !== 'failed')
+                )
+                if (newlyFailed.length > 0) {
+                    const names = newlyFailed.map(j => j.filename).join(', ')
+                    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+                    setToastMsg(`❌ Xử lý thất bại: ${names}`)
+                    toastTimerRef.current = setTimeout(() => setToastMsg(''), 8000)
+                }
+            }
+        } catch {}
+    }
+
+    const handleCancelJob = async (jobId: string) => {
+        if (!tenant) return
+        if (!confirm('Dừng job này? Job đang xử lý sẽ bị hủy ở file tiếp theo.')) return
+        try {
+            const res = await fetch(`${apiUrl}/kb/jobs/${jobId}/cancel`, {
+                method: 'POST', headers: { 'x-api-key': tenant.api_key }
+            })
+            if (res.ok) {
+                setKbJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: 'cancelled' as any } : j))
+            } else {
+                const d = await res.json()
+                alert(`Không thể dừng: ${d.detail || 'Lỗi không xác định'}`)
+            }
+        } catch { alert('Lỗi kết nối API') }
+    }
+
+    const handleDeleteJob = async (jobId: string) => {
+        if (!tenant) return
+        if (!confirm('Xóa job này khỏi danh sách?')) return
+        try {
+            const res = await fetch(`${apiUrl}/kb/jobs/${jobId}`, {
+                method: 'DELETE', headers: { 'x-api-key': tenant.api_key }
+            })
+            if (res.ok) {
+                setKbJobs(prev => prev.filter(j => j.id !== jobId))
+            } else {
+                const d = await res.json()
+                alert(`Không thể xóa: ${d.detail || 'Lỗi không xác định'}`)
+            }
+        } catch { alert('Lỗi kết nối API') }
+    }
+
+    const handleClearDoneJobs = async () => {
+        if (!tenant) return
+        const doneJobs = kbJobs.filter(j => j.status === 'completed' || j.status === 'failed' || (j.status as string) === 'cancelled')
+        if (doneJobs.length === 0) return alert('Không có job nào đã kết thúc để xóa.')
+        if (!confirm(`Xóa ${doneJobs.length} job đã kết thúc?`)) return
+        await Promise.all(doneJobs.map(j =>
+            fetch(`${apiUrl}/kb/jobs/${j.id}`, { method: 'DELETE', headers: { 'x-api-key': tenant.api_key } }).catch(() => {})
+        ))
+        setKbJobs(prev => prev.filter(j => j.status === 'processing' || j.status === 'pending'))
+    }
+
+    // Polling for jobs — deps: only tab & api_key, NOT kbJobs.length (prevents reset loop)
+    useEffect(() => {
+        if (tab !== 'kb' || !tenant) return
+        prevJobsRef.current = [] // reset on tab switch
+        loadKbJobs()
+        const inv = setInterval(loadKbJobs, 3000)
+        return () => {
+            clearInterval(inv)
+            if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [tab, tenant?.api_key])
+
+    const handleSaveDoc = async () => {
+        if (!editingDoc) return
+        setSavingDoc(true)
+        try {
+            const res = await fetch(`${apiUrl}/admin/customers/${tenantId}/kb/${editingDoc.id}`, {
+                method: 'PUT', headers: { 'Content-Type': 'application/json', ...h },
+                body: JSON.stringify({ content: editingContent })
+            })
+            if (res.ok) {
+                setKbDocs(docs => docs.map(d => d.id === editingDoc.id ? { ...d, content: editingContent } : d))
+                setEditingDoc(null)
+            } else {
+                alert('Lỗi khi lưu chunk')
+            }
+        } catch {
+            alert('Lỗi kết nối')
+        } finally {
+            setSavingDoc(false)
+        }
+    }
+
+    const handleDeleteDoc = async (id: string, e: React.MouseEvent) => {
+        e.stopPropagation()
+        if (!confirm('Xóa chunk này?')) return
+        try {
+            const res = await fetch(`${apiUrl}/admin/customers/${tenantId}/kb/${id}`, { method: 'DELETE', headers: h })
+            if (res.ok) {
+                setKbDocs(docs => docs.filter(d => d.id !== id))
+            } else {
+                alert('Lỗi khi xóa chunk')
+            }
+        } catch {}
+    }
+
     const handleClearKB = async () => {
         if (!confirm('Xóa toàn bộ Knowledge Base của tenant này?')) return
         await fetch(`${apiUrl}/admin/customers/${tenantId}/kb`, { method: 'DELETE', headers: h })
         setKbDocs([]); setUploadMsg('🗑️ Đã xóa toàn bộ Knowledge Base.')
+    }
+
+    const handleDeleteFile = async (filename: string, e: React.MouseEvent) => {
+        e.stopPropagation()
+        if (!confirm(`Xóa toàn bộ dữ liệu của "${filename}"?`)) return
+        try {
+            const res = await fetch(`${apiUrl}/admin/customers/${tenantId}/kb/file?filename=${encodeURIComponent(filename)}`, { method: 'DELETE', headers: h })
+            if (res.ok) {
+                setKbDocs(docs => docs.filter(d => (d.metadata?.filename || 'Khác') !== filename))
+            } else {
+                alert('Lỗi khi xóa file')
+            }
+        } catch {}
+    }
+
+    const handleSaveManualText = async () => {
+        if (!manualTitle.trim() || !manualContent.trim()) return alert('Vui lòng nhập đủ Tiêu đề và Nội dung')
+        setSavingManual(true)
+        try {
+            const res = await fetch(`${apiUrl}/admin/customers/${tenantId}/kb/text`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json', ...h },
+                body: JSON.stringify({ title: manualTitle, content: manualContent })
+            })
+            if (res.ok) {
+                setShowManualModal(false)
+                setManualTitle('')
+                setManualContent('')
+                loadKb(1)
+            } else {
+                alert('Lỗi khi lưu')
+            }
+        } catch { alert('Lỗi API') }
+        finally { setSavingManual(false) }
+    }
+
+    const memoizedGroups = useMemo(() => {
+        const groups: Record<string, KBDoc[]> = {}
+        kbDocs.forEach((doc: KBDoc) => {
+            const fn = doc.metadata?.filename || 'Khác'
+            if (!groups[fn]) groups[fn] = []
+            groups[fn].push(doc)
+        })
+        return groups
+    }, [kbDocs])
+
+
+    const handleSaveRealtimeKb = async () => {
+        if (!tenant || !realtimeForm.source_id.trim() || !realtimeForm.content.trim()) return alert('Vui lòng nhập ID nhận diện và Nội dung!')
+        setSavingRealtime(true)
+        try {
+            const payload = {
+                chunks: [{
+                    source_id: realtimeForm.source_id,
+                    content: realtimeForm.content,
+                    category: realtimeForm.category,
+                    valid_from: realtimeForm.valid_from ? new Date(realtimeForm.valid_from).toISOString() : new Date().toISOString(),
+                    valid_to: realtimeForm.valid_to ? new Date(realtimeForm.valid_to).toISOString() : null,
+                    ttl_minutes: realtimeForm.ttl_minutes
+                }]
+            }
+            const res = await fetch(`${apiUrl}/kb/upload/realtime`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': tenant.api_key },
+                body: JSON.stringify(payload)
+            })
+            if (res.ok) {
+                setShowRealtimeModal(false)
+                setRealtimeForm({ source_id: '', content: '', category: 'pricing', valid_from: '', valid_to: '', ttl_minutes: 60 })
+                loadRealtimeKb(1)
+            } else {
+                alert('Lỗi khi lưu Realtime KB')
+            }
+        } catch { alert('Lỗi kết nối API') }
+        finally { setSavingRealtime(false) }
+    }
+
+    const handleDeleteRealtimeKb = async (source_id: string) => {
+        if (!tenant || !confirm(`Thu hồi (expire) chunk realtime: ${source_id}?`)) return
+        try {
+            const res = await fetch(`${apiUrl}/kb/realtime/expire`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': tenant.api_key },
+                body: JSON.stringify({ source_id })
+            })
+            if (res.ok) {
+                loadRealtimeKb(1)
+            } else alert('Lỗi khi expire')
+        } catch { alert('Lỗi kết nối') }
+    }
+
+    const toggleFile = (fn: string) => setExpandedFiles(prev => ({ ...prev, [fn]: !prev[fn] }))
+
+    const handleKbSearch = (q: string) => {
+        setKbSearchQuery(q)
+        if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current)
+        if (!q.trim()) { setKbSearchResults(null); return }
+        searchDebounceRef.current = setTimeout(async () => {
+            setKbSearchLoading(true)
+            try {
+                const res = await fetch(`${apiUrl}/admin/customers/${tenantId}/kb/search?q=${encodeURIComponent(q)}&top_k=10`, { headers: h })
+                const data = await res.json()
+                setKbSearchResults(res.ok ? data.results : [])
+            } catch { setKbSearchResults([]) }
+            finally { setKbSearchLoading(false) }
+        }, 500)
     }
 
     if (loading) return <div style={{ textAlign: 'center', padding: 80, color: 'var(--admin-text-muted)' }}>Đang tải...</div>
@@ -312,6 +612,23 @@ export default function TenantDetailPage() {
 
     return (
         <>
+            {/* Toast Notification */}
+            {toastMsg && (
+                <div style={{
+                    position: 'fixed', bottom: 24, right: 24, zIndex: 9999,
+                    background: toastMsg.startsWith('✅') ? 'var(--admin-success)' : 'var(--admin-danger)',
+                    color: '#fff', padding: '12px 20px', borderRadius: 10,
+                    boxShadow: '0 4px 20px rgba(0,0,0,0.25)', fontSize: 14, fontWeight: 600,
+                    display: 'flex', alignItems: 'center', gap: 10, maxWidth: 380,
+                    animation: 'fadeInUp 0.3s ease',
+                }}>
+                    <span style={{ flex: 1 }}>{toastMsg}</span>
+                    <button onClick={() => setToastMsg('')} style={{
+                        background: 'none', border: 'none', color: '#fff',
+                        cursor: 'pointer', fontSize: 18, lineHeight: 1, padding: '0 4px', opacity: 0.8
+                    }}>×</button>
+                </div>
+            )}
             {/* Header */}
             <div className="admin-topbar">
                 <div>
@@ -351,7 +668,8 @@ export default function TenantDetailPage() {
             {/* Tabs */}
             <div className="admin-tabs">
                 <button className={`admin-tab ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>⚙️ Cài đặt Bot</button>
-                <button className={`admin-tab ${tab === 'kb' ? 'active' : ''}`} onClick={() => setTab('kb')}>📚 Knowledge Base</button>
+                <button className={`admin-tab ${tab === 'kb' ? 'active' : ''}`} onClick={() => setTab('kb')}>📚 Static KB</button>
+                <button className={`admin-tab ${tab === 'realtime_kb' ? 'active' : ''}`} onClick={() => setTab('realtime_kb')}>⚡ Realtime KB</button>
                 <button className={`admin-tab ${tab === 'chat' ? 'active' : ''}`} onClick={() => setTab('chat')}>💬 Lịch sử Chat</button>
                 <button className={`admin-tab ${tab === 'quota' ? 'active' : ''}`} onClick={() => setTab('quota')}>📊 Quota</button>
             </div>
@@ -405,6 +723,10 @@ export default function TenantDetailPage() {
                             <input className="admin-input" value={tenant.bot_name || ''} onChange={e => setTenant(t => t ? { ...t, bot_name: e.target.value } : t)} />
                         </div>
                         <div className="admin-form-group">
+                            <label className="admin-label">Lĩnh vực hoạt động (Cung cấp ngữ cảnh cho AI)</label>
+                            <input className="admin-input" placeholder="VD: Dịch vụ làm móng, Bán quần áo..." value={tenant.industry || ''} onChange={e => setTenant(t => t ? { ...t, industry: e.target.value } : t)} />
+                        </div>
+                        <div className="admin-form-group">
                             <label className="admin-label">Email</label>
                             <input className="admin-input" value={tenant.email || ''} disabled style={{ opacity: 0.6 }} />
                         </div>
@@ -456,9 +778,58 @@ export default function TenantDetailPage() {
                         ))}
                     </div>
 
-                    <div className="admin-form-group">
-                        <label className="admin-label">System Prompt</label>
-                        <textarea className="admin-textarea" rows={6} value={tenant.system_prompt || ''} onChange={e => setTenant(t => t ? { ...t, system_prompt: e.target.value } : t)} />
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 20 }}>
+                        <div className="admin-form-group">
+                            <label className="admin-label">System Prompt (Chỉ đường cho AI)</label>
+                            <textarea className="admin-textarea" rows={6} value={tenant.system_prompt || ''} onChange={e => setTenant(t => t ? { ...t, system_prompt: e.target.value } : t)} />
+                        </div>
+                        <div className="admin-form-group">
+                            <label className="admin-label">Câu chào mặc định (Greeting Message)</label>
+                            <input className="admin-input" placeholder="Xin chào! Mình có thể giúp gì cho bạn?" value={tenant.greeting_message || ''} onChange={e => setTenant(t => t ? { ...t, greeting_message: e.target.value } : t)} />
+                        </div>
+                    </div>
+
+                    <div className="admin-section-header" style={{ marginBottom: 16, marginTop: 24 }}>
+                        <span className="admin-section-title">⚡ Câu hỏi nhanh (Tối đa 6 câu)</span>
+                        <span className="text-sm text-muted">Hiển thị trực tiếp trên giao diện widget để khách hàng bấm nhanh.</span>
+                    </div>
+                    <div className="admin-form-group" style={{ background: 'var(--admin-bg)', padding: 16, borderRadius: 8, border: '1px solid var(--admin-border)' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            {quickQuestions.map((q, idx) => (
+                                <div key={idx} style={{ display: 'flex', gap: 10 }}>
+                                    <input 
+                                        className="admin-input" 
+                                        value={q} 
+                                        onChange={e => {
+                                            const newArr = [...quickQuestions];
+                                            newArr[idx] = e.target.value;
+                                            setQuickQuestions(newArr);
+                                        }} 
+                                        placeholder="VD: Có bảng giá tên miền không?"
+                                        style={{ flex: 1 }}
+                                    />
+                                    <button 
+                                        className="admin-btn admin-btn-danger admin-btn-sm" 
+                                        onClick={() => setQuickQuestions(arr => arr.filter((_, i) => i !== idx))}
+                                        title="Xóa"
+                                    >
+                                        ✕
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                        {quickQuestions.length < 6 && (
+                            <button 
+                                className="admin-btn admin-btn-sm" 
+                                style={{ marginTop: 12 }}
+                                onClick={() => setQuickQuestions([...quickQuestions, ''])}
+                            >
+                                ➕ Thêm câu hỏi
+                            </button>
+                        )}
+                        {quickQuestions.length === 6 && (
+                            <div style={{ fontSize: 13, color: 'var(--admin-warning)', marginTop: 12 }}>Đã đạt tối đa 6 câu hỏi.</div>
+                        )}
                     </div>
 
                     <hr className="divider" />
@@ -571,8 +942,13 @@ def execute(req: dict, authorization: str = Header(None)):
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
                     <div className="admin-card">
                         <div className="admin-section-header">
-                            <span className="admin-section-title">📤 Upload tài liệu</span>
-                            <div style={{ fontSize: 12, color: 'var(--admin-text-muted)' }}>Hỗ trợ: .txt · .md · .pdf · .xlsx · .csv · .json</div>
+                            <div>
+                                <span className="admin-section-title">📤 Upload tài liệu</span>
+                                <div style={{ fontSize: 12, color: 'var(--admin-text-muted)' }}>Hỗ trợ: .txt · .md · .pdf · .xlsx · .csv · .json</div>
+                            </div>
+                            <button className="admin-btn admin-btn-sm" onClick={() => setShowManualModal(true)}>
+                                ✍️ Thêm Text / QA thủ công
+                            </button>
                         </div>
                         <div className={`upload-zone ${dragover ? 'dragover' : ''}`}
                             onDragOver={e => { e.preventDefault(); setDragover(true) }}
@@ -603,13 +979,158 @@ def execute(req: dict, authorization: str = Header(None)):
                         </div>
                     </div>
 
+                    {kbJobs.length > 0 && (
+                        <div className="admin-card" style={{ padding: '16px', background: 'var(--admin-surface-2)', border: '1px solid var(--admin-border)', marginBottom: 20 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                                <span style={{ fontWeight: 600, fontSize: 13 }}>
+                                    ⏳ Trạng thái xử lý file
+                                    {kbJobs.filter(j => j.status === 'processing' || j.status === 'pending').length > 0 &&
+                                        <span style={{ marginLeft: 6, color: 'var(--admin-primary)' }}>({kbJobs.filter(j => j.status === 'processing' || j.status === 'pending').length} đang chạy)</span>
+                                    }
+                                </span>
+                                <div style={{ display: 'flex', gap: 8 }}>
+                                    <button className="admin-btn admin-btn-ghost admin-btn-sm" style={{ fontSize: 12 }} onClick={handleClearDoneJobs}>🗑️ Xóa job xong</button>
+                                    <button className="admin-btn admin-btn-ghost admin-btn-sm" style={{ fontSize: 12 }} onClick={loadKbJobs}>🔄 Làm mới</button>
+                                </div>
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                {kbJobs.map(job => (
+                                    <div key={job.id} style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 12px', background: 'var(--admin-bg)', borderRadius: 6, border: '1px solid var(--admin-border)' }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                                            <span style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }} title={job.filename}>
+                                                📄 {job.filename}
+                                            </span>
+                                            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+                                                <span className={`badge ${
+                                                    job.status === 'completed' ? 'badge-green'
+                                                    : job.status === 'failed' ? 'badge-red'
+                                                    : (job.status as string) === 'cancelled' ? 'badge-yellow'
+                                                    : 'badge-blue'
+                                                }`} style={{ fontSize: 11 }}>
+                                                    {job.status === 'processing' ? '⚙️ Đang xử lý'
+                                                    : job.status === 'pending' ? '⏳ Đang chờ'
+                                                    : job.status === 'completed' ? '✅ Xong'
+                                                    : (job.status as string) === 'cancelled' ? '⛔ Đã dừng'
+                                                    : '❌ Lỗi'}
+                                                </span>
+                                                {(job.status === 'pending' || job.status === 'processing') && (
+                                                    <button
+                                                        className="admin-btn admin-btn-ghost admin-btn-sm"
+                                                        style={{ fontSize: 11, padding: '2px 8px', color: 'var(--admin-warning)' }}
+                                                        title="Dừng job"
+                                                        onClick={() => handleCancelJob(job.id)}
+                                                    >⏹ Dừng</button>
+                                                )}
+                                                <button
+                                                    className="admin-btn admin-btn-ghost admin-btn-sm"
+                                                    style={{ fontSize: 11, padding: '2px 8px', color: 'var(--admin-danger)' }}
+                                                    title="Xóa job"
+                                                    onClick={() => handleDeleteJob(job.id)}
+                                                >🗑️</button>
+                                            </div>
+                                        </div>
+                                        {(job.status === 'processing' || job.status === 'completed') && (
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                                <div style={{ width: '100%', height: 6, background: 'var(--admin-surface-3)', borderRadius: 3, overflow: 'hidden' }}>
+                                                    <div style={{ width: `${job.total_chunks > 0 ? (job.processed_chunks / job.total_chunks) * 100 : 0}%`, height: '100%', background: 'var(--admin-primary)', transition: 'width 0.3s' }}></div>
+                                                </div>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--admin-text-muted)' }}>
+                                                    <span>{job.total_chunks > 0 ? `Đã xử lý ${job.processed_chunks}/${job.total_chunks} chunk` : 'Đang phân tích file...'}</span>
+                                                    <span>{new Date(job.created_at).toLocaleTimeString('vi-VN')}</span>
+                                                </div>
+                                            </div>
+                                        )}
+                                        {job.status === 'failed' && <div style={{ fontSize: 11, color: 'var(--admin-danger)' }}>Lỗi: {job.error_message}</div>}
+                                        {(job.status as string) === 'cancelled' && <div style={{ fontSize: 11, color: 'var(--admin-warning)' }}>Job đã bị dừng theo yêu cầu.</div>}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     <div className="admin-card">
-                        <div className="admin-section-header">
-                            <span className="admin-section-title">📚 Knowledge Base ({kbDocs.length} chunks)</span>
+                        <div className="admin-section-header" style={{ marginBottom: 12 }}>
+                            <span className="admin-section-title">📚 Knowledge Base ({kbTotal} chunks)</span>
                             <button className="admin-btn admin-btn-danger admin-btn-sm" onClick={handleClearKB}>🗑️ Xóa tất cả</button>
+                        </div>
+
+                        {/* Search bar */}
+                        <div style={{ position: 'relative', marginBottom: 16 }}>
+                            <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', fontSize: 16, pointerEvents: 'none' }}>🔍</span>
+                            <input
+                                className="admin-input"
+                                style={{ paddingLeft: 42, paddingRight: kbSearchQuery ? 36 : 14, transition: 'box-shadow 0.2s' }}
+                                placeholder="Tìm kiếm ngữ nghĩa (AI Vector Search)..."
+                                value={kbSearchQuery}
+                                onChange={e => handleKbSearch(e.target.value)}
+                            />
+                            {kbSearchQuery && (
+                                <button
+                                    onClick={() => { setKbSearchQuery(''); setKbSearchResults(null) }}
+                                    style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--admin-text-muted)', cursor: 'pointer', fontSize: 18, lineHeight: 1 }}
+                                >&#x2715;</button>
+                            )}
                         </div>
                         {kbLoading ? (
                             <p className="text-muted" style={{ textAlign: 'center', padding: 30 }}>Đang tải...</p>
+                        ) : kbSearchResults !== null ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                                {kbSearchLoading ? (
+                                    <div style={{ textAlign: 'center', padding: 30, color: 'var(--admin-text-muted)' }}>
+                                        <div style={{ fontSize: 24, marginBottom: 8, animation: 'spin 1s linear infinite', display: 'inline-block' }}>⚙️</div>
+                                        <div style={{ fontSize: 13 }}>AI đang tìm kiếm...</div>
+                                    </div>
+                                ) : kbSearchResults.length === 0 ? (
+                                    <div className="admin-empty" style={{ padding: 40 }}>
+                                        <div className="admin-empty-icon">🔍</div>
+                                        <h3>Không tìm thấy kết quả</h3>
+                                        <p>Thử tìm từ khóa khác hoặc kiểm tra lại KB</p>
+                                    </div>
+                                ) : (
+                                    <div>
+                                        <div style={{ fontSize: 12, color: 'var(--admin-text-muted)', marginBottom: 10 }}>
+                                            ✨ Tìm thấy <strong>{kbSearchResults.length}</strong> kết quả liên quan nhất — click để chỉnh sửa
+                                        </div>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 480, overflowY: 'auto' }}>
+                                        {kbSearchResults.map((r, i) => {
+                                            const scorePct = Math.round(r.score * 100)
+                                            const scoreColor = r.score >= 0.6 ? 'var(--admin-success)' : r.score >= 0.4 ? '#f59e0b' : 'var(--admin-text-muted)'
+                                            const matchingDoc = kbDocs.find(d => d.id === r.id) || null
+                                            return (
+                                                <div key={r.id}
+                                                    onClick={() => { if (matchingDoc) { setEditingDoc(matchingDoc); setEditingContent(r.content); setEditingScore(r.score) } }}
+                                                    style={{ background: 'var(--admin-bg)', border: '1px solid var(--admin-border)', borderRadius: 8, padding: '12px 14px', cursor: matchingDoc ? 'pointer' : 'default', transition: 'border-color 0.15s, box-shadow 0.15s' }}
+                                                    onMouseEnter={e => { if (matchingDoc) { (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--admin-primary)'; } }}
+                                                    onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--admin-border)'; }}
+                                                >
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                                                            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--admin-text)' }}>#{i+1}</span>
+                                                            {r.filename && <span className="badge badge-blue">📁 {r.filename}</span>}
+                                                            {r.type && <span className="badge badge-yellow">{r.type}</span>}
+                                                        </div>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                                                            <div style={{ width: 60, height: 5, background: 'var(--admin-border)', borderRadius: 99 }}>
+                                                                <div style={{ width: `${Math.min(scorePct,100)}%`, height: '100%', background: scoreColor, borderRadius: 99, transition: 'width 0.4s' }} />
+                                                            </div>
+                                                            <span style={{ fontSize: 11, fontWeight: 700, color: scoreColor, minWidth: 32 }}>{scorePct}%</span>
+                                                        </div>
+                                                    </div>
+                                                    <p style={{ fontSize: 13, color: 'var(--admin-text-muted)', margin: 0, lineHeight: 1.6 }}>
+                                                        {r.content?.slice(0, 240)}{(r.content?.length || 0) > 240 ? '...' : ''}
+                                                    </p>
+                                                    {scorePct < 70 && (
+                                                        <div style={{ marginTop: 10, padding: '8px 10px', background: 'var(--admin-warning-glow)', border: '1px dashed var(--admin-warning)', borderRadius: 6, fontSize: 12, color: 'var(--admin-warning)' }}>
+                                                            💡 <strong>Gợi ý cải thiện ({scorePct}%):</strong> Chunk này có điểm khá thấp. Hãy <strong>click vào để sửa</strong>, bổ sung thêm các *từ khóa chính xác* (tên sản phẩm, mã SKU) và câu hỏi thường gặp để AI dễ tìm thấy hơn.
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )
+                                        })}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
                         ) : kbDocs.length === 0 ? (
                             <div className="admin-empty" style={{ padding: 40 }}>
                                 <div className="admin-empty-icon">📭</div>
@@ -618,20 +1139,242 @@ def execute(req: dict, authorization: str = Header(None)):
                             </div>
                         ) : (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 480, overflowY: 'auto' }}>
-                                {kbDocs.map((doc, i) => (
-                                    <div key={doc.id || i} style={{ background: 'var(--admin-bg)', border: '1px solid var(--admin-border)', borderRadius: 8, padding: '12px 14px' }}>
-                                        <div style={{ display: 'flex', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
-                                            {doc.metadata?.filename && <span className="badge badge-blue">📄 {doc.metadata.filename}</span>}
-                                            {doc.metadata?.type && <span className="badge badge-yellow">{doc.metadata.type}</span>}
-                                            <span className="badge" style={{ background: 'var(--admin-surface-3)', color: 'var(--admin-text-muted)', fontSize: 10 }}>#{i + 1}</span>
+                                {Object.entries(memoizedGroups).map(([filename, docs]) => (
+                                    <div key={filename} style={{ background: 'var(--admin-bg)', border: '1px solid var(--admin-border)', borderRadius: 8, overflow: 'hidden' }}>
+                                        <div 
+                                            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', cursor: 'pointer', background: 'var(--admin-surface)', borderBottom: expandedFiles[filename] ? '1px solid var(--admin-border)' : 'none' }}
+                                            onClick={() => toggleFile(filename)}
+                                        >
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                <span style={{ fontSize: 16 }}>{expandedFiles[filename] ? '📂' : '📁'}</span>
+                                                <span style={{ fontWeight: 600, fontSize: 14 }}>{filename}</span>
+                                                <span className="badge badge-yellow">{docs.length} chunks</span>
+                                            </div>
+                                            <button 
+                                                onClick={(e) => handleDeleteFile(filename, e)}
+                                                style={{ background: 'none', border: 'none', color: 'var(--admin-danger)', cursor: 'pointer', fontSize: 14, opacity: 0.6 }}
+                                                title="Xóa toàn bộ file này"
+                                            >🗑️</button>
                                         </div>
-                                        <p style={{ fontSize: 13, color: 'var(--admin-text-muted)', margin: 0, lineHeight: 1.6 }}>
-                                            {doc.content?.slice(0, 220)}{(doc.content?.length || 0) > 220 ? '...' : ''}
-                                        </p>
+                                        {expandedFiles[filename] && (
+                                            <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8, background: 'var(--admin-surface-2)' }}>
+                                                {docs.map((doc, i) => (
+                                                    <div key={doc.id || i} style={{ background: 'var(--admin-bg)', border: '1px solid var(--admin-border)', borderRadius: 8, padding: '10px 12px', cursor: 'pointer', position: 'relative' }} 
+                                                        onClick={() => { setEditingDoc(doc); setEditingContent(doc.content); setEditingScore(null); }}>
+                                                        <div style={{ display: 'flex', gap: 8, marginBottom: 6, flexWrap: 'wrap', paddingRight: 40 }}>
+                                                            {doc.metadata?.type && <span className="badge badge-yellow">{doc.metadata.type}</span>}
+                                                            <span className="badge" style={{ background: 'var(--admin-surface-3)', color: 'var(--admin-text-muted)', fontSize: 10 }}>Chunk #{i + 1}</span>
+                                                        </div>
+                                                        <p style={{ fontSize: 13, color: 'var(--admin-text-muted)', margin: 0, lineHeight: 1.6 }}>
+                                                            {doc.content?.slice(0, 220)}{(doc.content?.length || 0) > 220 ? '...' : ''}
+                                                        </p>
+                                                        <button 
+                                                            onClick={(e) => handleDeleteDoc(doc.id, e)}
+                                                            style={{ position: 'absolute', top: 12, right: 14, background: 'none', border: 'none', color: 'var(--admin-danger)', cursor: 'pointer', fontSize: 14, opacity: 0.6 }}
+                                                            title="Xóa chunk này"
+                                                        >🗑️</button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
                                     </div>
                                 ))}
                             </div>
                         )}
+
+                        {kbTotal > 20 && (
+                            <div style={{ display: 'flex', gap: 8, padding: '16px 0', justifyContent: 'center', borderTop: '1px solid var(--admin-border)', marginTop: 12 }}>
+                                <button className="admin-btn admin-btn-ghost admin-btn-sm" onClick={() => loadKb(kbPage - 1)} disabled={kbPage <= 1 || kbLoading}>← Trước</button>
+                                <span className="text-sm text-muted" style={{ margin: 'auto 8px' }}>Trang {kbPage} / {Math.ceil(kbTotal / 20)}</span>
+                                <button className="admin-btn admin-btn-ghost admin-btn-sm" onClick={() => loadKb(kbPage + 1)} disabled={kbPage * 20 >= kbTotal || kbLoading}>Sau →</button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+            {/* ── Realtime KB Tab ── */}
+            {tab === 'realtime_kb' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                    <div className="admin-card">
+                        <div className="admin-section-header">
+                            <div>
+                                <span className="admin-section-title">⚡ Realtime KB ({realtimeTotal} chunks)</span>
+                                <div style={{ fontSize: 12, color: 'var(--admin-text-muted)' }}>Dữ liệu có thời hạn (TTL), tự động ưu tiên trên Static KB.</div>
+                            </div>
+                            <button className="admin-btn admin-btn-sm" onClick={() => setShowRealtimeModal(true)}>
+                                ➕ Thêm Chunk Nhạy Cảm Thời Gian
+                            </button>
+                        </div>
+
+                        {realtimeDocs.length === 0 ? (
+                            <div className="admin-empty" style={{ padding: 40 }}>
+                                <div className="admin-empty-icon">⏳</div>
+                                <h3>Chưa có dữ liệu Realtime</h3>
+                                <p>Thêm bảng giá, khuyến mãi hoặc flash sale để AI trả lời chính xác.</p>
+                            </div>
+                        ) : (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 600, overflowY: 'auto' }}>
+                                {realtimeDocs.map((doc, i) => (
+                                    <div key={doc.id || i} style={{ background: 'var(--admin-bg)', border: '1px solid var(--admin-border)', borderRadius: 8, padding: '12px', position: 'relative' }}>
+                                        <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center', paddingRight: 40 }}>
+                                            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--admin-primary)' }}>ID: {doc.metadata?.source_id}</span>
+                                            {doc.metadata?.category && <span className="badge badge-yellow">{doc.metadata.category}</span>}
+                                            {doc.metadata?.valid_to && (
+                                                <span className="badge badge-red" style={{ background: new Date(doc.metadata.valid_to) < new Date() ? 'var(--admin-danger)' : 'var(--admin-surface-3)' }}>
+                                                    ⏱ Hạn: {new Date(doc.metadata.valid_to).toLocaleString('vi-VN')}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <p style={{ fontSize: 13, color: 'var(--admin-text)', margin: 0, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                                            {doc.content}
+                                        </p>
+                                        <button 
+                                            onClick={() => handleDeleteRealtimeKb(doc.metadata?.source_id)}
+                                            style={{ position: 'absolute', top: 12, right: 14, background: 'none', border: 'none', color: 'var(--admin-danger)', cursor: 'pointer', fontSize: 13, opacity: 0.8 }}
+                                            title="Thu hồi (expire) chunk này"
+                                        >🗑️ Xuống lịch/Thu hồi</button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {realtimeTotal > 20 && (
+                            <div style={{ display: 'flex', gap: 8, padding: '16px 0', justifyContent: 'center', borderTop: '1px solid var(--admin-border)', marginTop: 12 }}>
+                                <button className="admin-btn admin-btn-ghost admin-btn-sm" onClick={() => loadRealtimeKb(realtimePage - 1)} disabled={realtimePage <= 1 || realtimeLoading}>← Trước</button>
+                                <span className="text-sm text-muted" style={{ margin: 'auto 8px' }}>Trang {realtimePage} / {Math.ceil(realtimeTotal / 20)}</span>
+                                <button className="admin-btn admin-btn-ghost admin-btn-sm" onClick={() => loadRealtimeKb(realtimePage + 1)} disabled={realtimePage * 20 >= realtimeTotal || realtimeLoading}>Sau →</button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* Realtime Modal */}
+            {showRealtimeModal && (
+                <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 }}>
+                    <div className="admin-card" style={{ width: '90%', maxWidth: 500, display: 'flex', flexDirection: 'column' }}>
+                        <div className="admin-section-header" style={{ marginBottom: 16 }}>
+                            <span className="admin-section-title">⚡ Thêm Dữ liệu Realtime</span>
+                            <button className="admin-btn admin-btn-sm" style={{ background: 'none', border: 'none' }} onClick={() => setShowRealtimeModal(false)}>✖</button>
+                        </div>
+                        <div className="admin-form-group">
+                            <label className="admin-label">ID Nhận Diện (source_id) <span style={{color:'red'}}>*</span></label>
+                            <input className="admin-input" value={realtimeForm.source_id} onChange={e => setRealtimeForm({...realtimeForm, source_id: e.target.value})} placeholder="VD: price_iphone16_pro" />
+                            <div style={{ fontSize: 11, color: 'var(--admin-text-muted)', marginTop: 4 }}>Nếu upload trùng ID, chunk cũ sẽ tự động bị thay thế (để update giá).</div>
+                        </div>
+                        <div className="admin-form-group">
+                            <label className="admin-label">Loại (Category)</label>
+                            <select className="admin-input" value={realtimeForm.category} onChange={e => setRealtimeForm({...realtimeForm, category: e.target.value})}>
+                                <option value="pricing">Bảng giá</option>
+                                <option value="promotion">Khuyến mãi / Ưu đãi</option>
+                                <option value="flash_sale">Flash Sale</option>
+                            </select>
+                        </div>
+                        <div style={{ display: 'flex', gap: 12 }}>
+                            <div className="admin-form-group" style={{ flex: 1 }}>
+                                <label className="admin-label">Hiệu lực từ (Bỏ trống = Ngay)</label>
+                                <input type="datetime-local" className="admin-input" value={realtimeForm.valid_from} onChange={e => setRealtimeForm({...realtimeForm, valid_from: e.target.value})} />
+                            </div>
+                            <div className="admin-form-group" style={{ flex: 1 }}>
+                                <label className="admin-label">Hết hạn (Bỏ trống = Không hạn)</label>
+                                <input type="datetime-local" className="admin-input" value={realtimeForm.valid_to} onChange={e => setRealtimeForm({...realtimeForm, valid_to: e.target.value})} />
+                            </div>
+                        </div>
+                        <div className="admin-form-group" style={{ marginBottom: 0 }}>
+                            <label className="admin-label">Nội dung <span style={{color:'red'}}>*</span></label>
+                            <textarea 
+                                className="admin-textarea" 
+                                style={{ minHeight: 120, fontFamily: 'monospace', fontSize: 13, resize: 'vertical' }}
+                                value={realtimeForm.content}
+                                onChange={(e) => setRealtimeForm({...realtimeForm, content: e.target.value})}
+                                placeholder={"Ví dụ:\nĐiện thoại iPhone 16 Pro Max\nGiá: 32,990,000đ"}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
+                            <button className="admin-btn admin-btn-ghost" onClick={() => setShowRealtimeModal(false)}>Hủy</button>
+                            <button className="admin-btn admin-btn-primary" onClick={handleSaveRealtimeKb} disabled={savingRealtime || !realtimeForm.source_id.trim() || !realtimeForm.content.trim()}>
+                                {savingRealtime ? 'Đang lưu...' : '💾 Lưu & Deploy KB'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showManualModal && (
+                <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 }}>
+                    <div className="admin-card" style={{ width: '90%', maxWidth: 500, display: 'flex', flexDirection: 'column' }}>
+                        <div className="admin-section-header" style={{ marginBottom: 16 }}>
+                            <span className="admin-section-title">✍️ Thêm Text / QA thủ công</span>
+                            <button className="admin-btn admin-btn-sm" style={{ background: 'none', border: 'none' }} onClick={() => setShowManualModal(false)}>✖</button>
+                        </div>
+                        <div className="admin-form-group">
+                            <label className="admin-label">Tiêu đề (VD: Quy định trả hàng)</label>
+                            <input className="admin-input" value={manualTitle} onChange={e => setManualTitle(e.target.value)} placeholder="Nhập tiêu đề..." />
+                        </div>
+                        <div className="admin-form-group" style={{ marginBottom: 0 }}>
+                            <label className="admin-label">Nội dung</label>
+                            <textarea 
+                                className="admin-textarea" 
+                                style={{ minHeight: 150, fontFamily: 'monospace', fontSize: 13, resize: 'vertical' }}
+                                value={manualContent}
+                                onChange={(e) => setManualContent(e.target.value)}
+                                placeholder="Nhập nội dung kiến thức ở đây..."
+                            />
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
+                            <button className="admin-btn admin-btn-ghost" onClick={() => setShowManualModal(false)}>Hủy</button>
+                            <button className="admin-btn admin-btn-primary" onClick={handleSaveManualText} disabled={savingManual || !manualTitle.trim() || !manualContent.trim()}>
+                                {savingManual ? 'Đang lưu...' : '💾 Lưu lại'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Edit Chunk Modal */}
+            {editingDoc && (
+                <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 }}>
+                    <div className="admin-card" style={{ width: '90%', maxWidth: 700, maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
+                        <div className="admin-section-header" style={{ marginBottom: 16 }}>
+                            <span className="admin-section-title">✏️ Chỉnh sửa chi tiết ngữ cảnh (Chunk)</span>
+                            <button className="admin-btn admin-btn-sm" style={{ background: 'none', border: 'none' }} onClick={() => setEditingDoc(null)}>✖</button>
+                        </div>
+                        
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+                            {editingDoc.metadata?.filename && <span className="badge badge-blue">📄 {editingDoc.metadata.filename}</span>}
+                            {editingDoc.metadata?.type && <span className="badge badge-yellow">{editingDoc.metadata.type}</span>}
+                            {editingScore !== null && (
+                                <span className="badge" style={{ background: 'var(--admin-surface-3)', border: '1px dashed var(--admin-primary)', color: 'var(--admin-text)' }}>
+                                    🎯 Điểm RAG Search: <strong>{Math.round(editingScore * 100)}%</strong>
+                                </span>
+                            )}
+                        </div>
+
+                        <div style={{ padding: '12px 14px', background: 'var(--admin-primary-glow)', borderRadius: 8, border: '1px solid rgba(59, 130, 246, 0.2)', marginBottom: 16 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--admin-primary)', marginBottom: 4 }}>💡 Cách tối ưu nội dung cho AI (Hybrid Search)</div>
+                            <ul style={{ margin: 0, paddingLeft: 20, fontSize: 12, color: 'var(--admin-text)', lineHeight: 1.6 }}>
+                                <li>Hệ thống kết hợp tìm theo <strong>từ khóa khớp chính xác</strong> (BM25) và <strong>ý nghĩa tương đồng</strong> (Vector).</li>
+                                <li>Hãy đảm bảo chunk có chứa tên sản phẩm cụ thể, mã SKU hoặc từ đồng nghĩa thay vì chỉ dùng đại từ ("nó", "sản phẩm này").</li>
+                                <li>Câu văn rõ ràng, rành mạch. Có thể bổ sung thêm phần Hỏi-Đáp (Q: Hỏi gì? A: Trả lời nấy) ở ngay đầu đoạn.</li>
+                            </ul>
+                        </div>
+
+                        <div className="admin-form-group" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                            <label className="admin-label">Nội dung text (AI sẽ đọc phần này)</label>
+                            <textarea 
+                                className="admin-textarea" 
+                                style={{ flex: 1, minHeight: 250, fontFamily: 'monospace', fontSize: 13, resize: 'vertical' }}
+                                value={editingContent}
+                                onChange={(e) => setEditingContent(e.target.value)}
+                            />
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
+                            <button className="admin-btn admin-btn-ghost" onClick={() => setEditingDoc(null)}>Hủy</button>
+                            <button className="admin-btn admin-btn-primary" onClick={handleSaveDoc} disabled={savingDoc || !editingContent.trim()}>
+                                {savingDoc ? 'Đang lưu...' : '💾 Lưu cập nhật hệ thống'}
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}
@@ -691,7 +1434,7 @@ def execute(req: dict, authorization: str = Header(None)):
                                 </div>
                             ) : (
                                 <div style={{ overflowY: 'auto', flex: 1 }}>
-                                    {sessions.map(s => (
+                                    {sessions.map((s: ChatSession) => (
                                         <div key={s.id}
                                             onClick={() => loadSession(s.id)}
                                             style={{
@@ -743,7 +1486,7 @@ def execute(req: dict, authorization: str = Header(None)):
                                 <p className="text-muted" style={{ textAlign: 'center', padding: 30 }}>Đang tải...</p>
                             ) : (
                                 <div style={{ overflowY: 'auto', flex: 1, padding: '8px 0' }}>
-                                    {activeSession.messages.map((msg, i) => (
+                                    {activeSession.messages.map((msg: ChatMessage, i: number) => (
                                         <div key={msg.id || i} style={{
                                             display: 'flex', gap: 10, padding: '10px 14px',
                                             justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',

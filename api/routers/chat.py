@@ -1,13 +1,15 @@
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from models.tenant import get_customer_by_key, SessionLocal, Customer, ChatSession, ChatMessage
 from services.rag import search
 from services.llm import get_client
 from services.mcp import get_mcp_tools, execute_mcp_tool
+from services.analytics import log_rag_query
 from pydantic import BaseModel
 from typing import List, Optional, Any
 import json
 import uuid
+import time
 from datetime import datetime
 
 class MessageSchema(BaseModel):
@@ -22,10 +24,48 @@ class ChatHistorySchema(BaseModel):
     messages: List[MessageSchema]
 
 
-router = APIRouter(prefix="/chat", tags=["Chat"])
+router = APIRouter(prefix="/chat", tags=["Chat (Client)"])
+
+
+# ── Query Router ────────────────────────────────────────────────────────────
+# Phân loại intent của câu hỏi để search đúng KB layer
+# Tránh "context pollution" khi giá cũ và thông tin sản phẩm bị mix vào prompt
+
+_REALTIME_KEYWORDS = {
+    "pricing":    ["giá", "bao nhiêu tiền", "giá bán", "price", "cost", "phí", "mấy tiền", "giá cả", "báo giá"],
+    "promotion":  ["ưu đãi", "khuyến mãi", "giảm giá", "voucher", "coupon", "discount", "ưu đãi hiện tại", "combo"],
+    "flash_sale": ["flash sale", "sale sốc", "giảm sốc", "hôm nay có sale", "deal hôm nay", "flash"],
+}
+_STATIC_KEYWORDS = ["thông số", "tính năng", "cấu hình", "hướng dẫn", "bảo hành", "specs", "đặc điểm", "review", "đánh giá"]
+
+
+def route_query(question: str) -> tuple[str, list[str]]:
+    """
+    Phân loại câu hỏi → (mode, categories)
+    mode: 'static' | 'realtime' | 'hybrid'
+    """
+    q = question.lower()
+
+    matched_categories = []
+    for category, keywords in _REALTIME_KEYWORDS.items():
+        if any(kw in q for kw in keywords):
+            matched_categories.append(category)
+
+    has_static = any(kw in q for kw in _STATIC_KEYWORDS)
+
+    if matched_categories and not has_static:
+        return "realtime", matched_categories
+    elif has_static and not matched_categories:
+        return "static", []
+    elif matched_categories and has_static:
+        return "hybrid", matched_categories
+    else:
+        return "hybrid", []    # Fallback: retrieve cả 2, không filter category
+
 
 @router.post("/")
-async def chat(request: dict, x_api_key: str = Header(...)):
+async def chat(request: dict, background_tasks: BackgroundTasks, x_api_key: str = Header(...)):
+    start_time = time.time()
     customer = get_customer_by_key(x_api_key)
     if not customer:
         raise HTTPException(401, "Invalid API key")
@@ -36,9 +76,28 @@ async def chat(request: dict, x_api_key: str = Header(...)):
 
     user_message = request.get("message", "")
     history      = request.get("history", [])[-10:]
+    session_id   = request.get("session_id", None)
 
-    # 1. RAG — lấy context từ KB của customer này
-    kb_context = search(customer.qdrant_collection, user_message)
+    # 1. Query Router — phân loại intent trước khi tìm kiếm
+    search_mode, categories = route_query(user_message)
+
+    # 2. RAG — lấy context từ KB với filter theo mode và thời gian hiệu lực
+    results = search(customer.qdrant_collection, user_message, mode=search_mode, categories=categories or None, return_dicts=True)
+    
+    latency_ms = int((time.time() - start_time) * 1000)
+    
+    # Ghi log background async
+    background_tasks.add_task(
+        log_rag_query,
+        customer.id,
+        user_message,
+        "dense",  # Hiện /chat đang dùng search() mặc định (dense). Sẽ nâng thành hybrid sau nếu cần.
+        results,
+        latency_ms,
+        session_id
+    )
+
+    kb_context = [r.get("content", "") for r in results] if results else []
     context_text = "\n\n".join(kb_context) if kb_context else "Không có thông tin liên quan."
 
     system_prompt = f"""{customer.system_prompt}

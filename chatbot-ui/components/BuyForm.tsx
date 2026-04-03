@@ -55,9 +55,9 @@ export function BuyForm({ product, amount, apiKey }: Props) {
         <div className="component-card">
             <div className="component-header">
                 <span>🛒 Đặt mua</span>
-                <span className="component-badge">{amount.toLocaleString('vi-VN')}đ</span>
+                <span className="component-badge">{amount?.toLocaleString('vi-VN') || 0}đ</span>
             </div>
-            <div className="product-name-tag">{product}</div>
+            <div className="product-name-tag">{product || 'Sản phẩm'}</div>
 
             <form onSubmit={submit} className="crm-form">
                 <div className="form-group">
